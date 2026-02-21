@@ -902,9 +902,15 @@ class MemoryEngine(MemoryEngineInterface):
         async def start_pg0():
             """Start pg0 if configured."""
             if self._use_pg0:
+                config = get_config()
                 kwargs = {"name": self._pg0_instance_name}
                 if self._pg0_port is not None:
                     kwargs["port"] = self._pg0_port
+                # Forward pg0 password from config
+                kwargs["password"] = config.pg0_password
+                # Forward pg0_listen_addresses for bridge networking support
+                if config.pg0_listen_addresses != "localhost":
+                    kwargs["pg_config"] = {"listen_addresses": config.pg0_listen_addresses}
                 pg0 = EmbeddedPostgres(**kwargs)  # type: ignore[invalid-argument-type] - dict kwargs
                 # Check if pg0 is already running before we start it
                 was_already_running = await pg0.is_running()

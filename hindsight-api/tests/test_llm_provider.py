@@ -3,10 +3,24 @@ Test LLM provider with different models using actual memory operations.
 """
 import os
 from datetime import datetime
+import urllib.request
 import pytest
 from hindsight_api.engine.llm_wrapper import LLMProvider
 from hindsight_api.engine.utils import extract_facts
 from hindsight_api.engine.search.think_utils import reflect
+
+
+def _ollama_available(model: str) -> bool:
+    """Check if Ollama is reachable and has the specified model."""
+    try:
+        req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            import json
+            data = json.loads(resp.read())
+            available_models = [m.get("name", "") for m in data.get("models", [])]
+            return model in available_models
+    except Exception:
+        return False
 
 
 # Model matrix: (provider, model)
@@ -52,9 +66,9 @@ async def test_llm_provider_memory_operations(provider: str, model: str):
     """
     api_key = get_api_key_for_provider(provider)
 
-    # Skip Ollama tests in CI (no models available)
-    if provider == "ollama" and os.getenv("CI"):
-        pytest.skip(f"Skipping {provider}/{model}: Ollama not available in CI")
+    # Skip Ollama tests when the model is not available locally
+    if provider == "ollama" and not _ollama_available(model):
+        pytest.skip(f"Skipping {provider}/{model}: model not available in Ollama")
 
     # Other providers need an API key
     if provider != "ollama" and not api_key:

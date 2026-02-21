@@ -491,7 +491,9 @@ async def run_reflect_agent(
             for tc, result_data in zip(other_tools, tool_results):
                 if isinstance(result_data, Exception):
                     # Tool execution failed - log and raise to fail the request
-                    logger.error(f"[REFLECT {reflect_id}] Tool {tc.name} failed with exception: {result_data}")
+                    import traceback
+                    tb_str = "".join(traceback.format_exception(type(result_data), result_data, result_data.__traceback__))
+                    logger.error(f"[REFLECT {reflect_id}] Tool {tc.name} failed with exception: {result_data}\nTraceback:\n{tb_str}")
                     raise RuntimeError(f"Reflect tool '{tc.name}' failed: {result_data}")
 
                 output, duration_ms = result_data
@@ -670,7 +672,7 @@ async def _execute_tool(
         query = args.get("query")
         if not query:
             return {"error": "recall requires a query parameter"}
-        max_tokens = max(args.get("max_tokens") or 2048, 1000)  # Default 2048, min 1000
+        max_tokens = max(int(args.get("max_tokens") or 2048), 1000)  # Default 2048, min 1000
         return await recall_fn(query, max_tokens)
 
     elif tool_name == "learn":
@@ -703,7 +705,7 @@ def _summarize_input(tool_name: str, args: dict[str, Any]) -> str:
         query = args.get("query", "")
         query_preview = f"'{query[:30]}...'" if len(query) > 30 else f"'{query}'"
         # Show actual value used (default 2048, min 1000)
-        max_tokens = max(args.get("max_tokens") or 2048, 1000)
+        max_tokens = max(int(args.get("max_tokens") or 2048), 1000)
         return f"(query={query_preview}, max_tokens={max_tokens})"
     elif tool_name == "learn":
         name = args.get("name", "?")

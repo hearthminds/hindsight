@@ -117,8 +117,13 @@ ENV_WORKER_HTTP_PORT = "HINDSIGHT_API_WORKER_HTTP_PORT"
 # Reflect agent settings
 ENV_REFLECT_MAX_ITERATIONS = "HINDSIGHT_API_REFLECT_MAX_ITERATIONS"
 
+# pg0 embedded PostgreSQL configuration
+ENV_PG0_LISTEN_ADDRESSES = "HINDSIGHT_API_PG0_LISTEN_ADDRESSES"
+ENV_PG0_PASSWORD = "HINDSIGHT_API_PG0_PASSWORD"
+
 # Default values
 DEFAULT_DATABASE_URL = "pg0"
+DEFAULT_PG0_PASSWORD = "hindsight"
 DEFAULT_LLM_PROVIDER = "openai"
 DEFAULT_LLM_MODEL = "gpt-5-mini"
 DEFAULT_LLM_MAX_CONCURRENT = 32
@@ -348,6 +353,10 @@ class HindsightConfig:
     # Reflect agent settings
     reflect_max_iterations: int
 
+    # pg0 embedded PostgreSQL configuration
+    pg0_listen_addresses: str
+    pg0_password: str
+
     @classmethod
     def from_env(cls) -> "HindsightConfig":
         """Create configuration from environment variables."""
@@ -442,6 +451,9 @@ class HindsightConfig:
             worker_http_port=int(os.getenv(ENV_WORKER_HTTP_PORT, str(DEFAULT_WORKER_HTTP_PORT))),
             # Reflect agent settings
             reflect_max_iterations=int(os.getenv(ENV_REFLECT_MAX_ITERATIONS, str(DEFAULT_REFLECT_MAX_ITERATIONS))),
+            # pg0 config
+            pg0_listen_addresses=os.getenv(ENV_PG0_LISTEN_ADDRESSES, "localhost"),
+            pg0_password=os.getenv(ENV_PG0_PASSWORD, DEFAULT_PG0_PASSWORD),
         )
 
     def get_llm_base_url(self) -> str:

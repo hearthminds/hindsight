@@ -1,5 +1,8 @@
 import asyncio
 import logging
+import os
+import signal
+from pathlib import Path
 
 from pg0 import Pg0
 
@@ -20,6 +23,7 @@ class EmbeddedPostgres:
         password: str = DEFAULT_PASSWORD,
         database: str = DEFAULT_DATABASE,
         name: str = "hindsight",
+        pg_config: dict[str, str] | None = None,
         **kwargs,
     ):
         self.port = port  # None means pg0 will auto-assign
@@ -27,6 +31,7 @@ class EmbeddedPostgres:
         self.password = password
         self.database = database
         self.name = name
+        self.pg_config = pg_config
         self._pg0: Pg0 | None = None
 
     def _get_pg0(self) -> Pg0:
@@ -40,6 +45,9 @@ class EmbeddedPostgres:
             # Only set port if explicitly specified
             if self.port is not None:
                 kwargs["port"] = self.port
+            # Forward pg_config as Pg0's config parameter (e.g. listen_addresses)
+            if self.pg_config is not None:
+                kwargs["config"] = self.pg_config
             self._pg0 = Pg0(**kwargs)  # type: ignore[invalid-argument-type] - dict kwargs
         return self._pg0
 
@@ -55,6 +63,9 @@ class EmbeddedPostgres:
             try:
                 loop = asyncio.get_event_loop()
                 info = await loop.run_in_executor(None, pg0.start)
+                # Patch pg_hba.conf for network access if listening beyond localhost
+                if self._needs_pg_hba_patch():
+                    await loop.run_in_executor(None, self._patch_pg_hba)
                 # Get URI from pg0 (includes auto-assigned port)
                 uri = info.uri
                 logger.info(f"PostgreSQL started: {uri}")
@@ -72,6 +83,53 @@ class EmbeddedPostgres:
         raise RuntimeError(
             f"Failed to start embedded PostgreSQL after {max_retries} attempts. Last error: {last_error}"
         )
+
+    def _needs_pg_hba_patch(self) -> bool:
+        """Check if pg_hba.conf needs patching for non-localhost access."""
+        if self.pg_config is None:
+            return False
+        listen = self.pg_config.get("listen_addresses", "localhost")
+        return listen not in ("localhost", "127.0.0.1", "::1")
+
+    def _build_pg_hba_entry(self, existing_content: str) -> str:
+        """Add network access entry to pg_hba.conf content if not present.
+
+        Adds 'host all all 0.0.0.0/0 password' to allow connections from
+        bridge network interfaces (required for Podman bridge networking).
+        """
+        network_entry = "host    all             all             0.0.0.0/0               scram-sha-256"
+        if "0.0.0.0/0" in existing_content:
+            return existing_content
+        return existing_content.rstrip("\n") + "\n" + network_entry + "\n"
+
+    def _patch_pg_hba(self) -> None:
+        """Patch pg_hba.conf to allow connections from bridge networks.
+
+        Finds the pg_hba.conf in the pg0 data directory and adds a network
+        access entry. Then signals PostgreSQL to reload configuration.
+        """
+        data_dir = Path.home() / ".pg0" / "instances" / self.name / "data"
+        hba_path = data_dir / "pg_hba.conf"
+        if not hba_path.exists():
+            logger.warning(f"pg_hba.conf not found at {hba_path}, skipping patch")
+            return
+
+        content = hba_path.read_text()
+        new_content = self._build_pg_hba_entry(content)
+        if new_content != content:
+            hba_path.write_text(new_content)
+            logger.info(f"Patched {hba_path} for network access")
+            # Reload PostgreSQL to pick up pg_hba.conf changes via SIGHUP
+            pg0 = self._get_pg0()
+            try:
+                info = pg0.info()
+                if info.pid:
+                    os.kill(info.pid, signal.SIGHUP)
+                    logger.info(f"Sent SIGHUP to PostgreSQL (pid={info.pid}) for config reload")
+                else:
+                    logger.warning("PostgreSQL pid not found, pg_hba.conf changes require restart")
+            except Exception as e:
+                logger.warning(f"Failed to reload PostgreSQL config: {e}")
 
     async def stop(self) -> None:
         """Stop the PostgreSQL server."""

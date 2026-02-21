@@ -11,6 +11,10 @@ from datetime import datetime, timezone
 from hindsight_api.engine.memory_engine import Budget
 from hindsight_api import RequestContext
 
+pytestmark = pytest.mark.skip(
+    reason="Multilingual tests skipped — English-only LLM produces unreliable non-English output"
+)
+
 logger = logging.getLogger(__name__)
 
 

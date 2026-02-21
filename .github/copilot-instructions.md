@@ -4,50 +4,7 @@ applyTo: '**'
 
 # Hindsight — Development Guidelines
 
-## GPU Rate Limiting for vLLM
-
-0.3s delay between inference calls balances throughput and stability for 70B AWQ models.
-
-**Tags:** `hindsight`
-
-### The Sweet Spot
-
-| Delay | GPU Utilization | Notes |
-|-------|-----------------|-------|
-| 0s | ~100% | Risk of memory pressure, OOM |
-| 0.3s | ~80% | Good balance |
-| 0.5s | ~50% | Too conservative |
-
-### Implementation
-
-```python
-parser.add_argument('--delay', type=float, default=0.3, 
-                    help="Delay between LLM calls (rate limiting)")
-
-# In processing loop:
-if args.delay > 0 and i > 0:
-    time.sleep(args.delay)
-```
-
-### Why Rate Limit?
-
-- **Memory pressure**: Concurrent requests accumulate KV-cache
-- **Queue buildup**: Async APIs queue faster than processing
-- **Stability**: Sustained 100% utilization can cause hangs
-
-### Queue Management for Batch Imports
-
-For large imports, also consider queue-aware batching:
-
-```python
-# Submit N items, wait for queue to drain, repeat
---batch-size 10 --max-queue 3
-```
-
-This prevents unbounded queue growth while maintaining throughput.
-
-*Source: F-009 Hindsight Import Execution*
-
+### Architecture & Design
 
 ## Hindsight API Design Notes
 
@@ -74,38 +31,6 @@ Disposition traits (personality/behavioral configuration) only affect `reflect`,
 - All memory operations are bank-scoped
 - Bank ID appears in the URL path, not query params
 - Request/response bodies use Pydantic models (see Pydantic Model Pattern)
-
-
-## Adding New Config Flags
-
-Step-by-step workflow for adding configuration flags to Hindsight.
-
-**Tags:** `hindsight`
-
-### Steps
-
-1. **config.py** (`hindsight-api/hindsight_api/config.py`):
-   - Add `ENV_*` constant and `DEFAULT_*` constant
-   - Add field to `HindsightConfig` dataclass
-   - Initialize in `from_env()`
-
-2. **main.py**: Add to manual `HindsightConfig()` constructor (search "CLI override")
-
-3. **Usage in code**:
-   ```python
-   from ...config import get_config
-   config = get_config()
-   value = config.your_new_field
-   ```
-
-4. **Docs**: Update `hindsight-docs/docs/developer/configuration.md`
-
-### Key Points
-
-- Config values come from environment variables via `from_env()`
-- The `HindsightConfig` dataclass is the single typed source of truth
-- CLI overrides in `main.py` take precedence over env vars
-- Always document new flags in the Docusaurus docs site
 
 
 ## Hindsight Context Window Budget
@@ -159,129 +84,6 @@ If KV-cache 4-bit compression becomes available:
 All chunk size parameters are configurable via CLI args for this reason.
 
 *Source: F-009 Hindsight Import Execution (Phase 2.8 context window analysis)*
-
-
-## Control Plane Route Proxies
-
-When modifying dataplane API parameters, also update the control plane route proxies.
-
-**Tags:** `hindsight`
-
-### Routes to Update
-
-| Control Plane Route | Proxied API Endpoint |
-|---------------------|----------------------|
-| `recall/route.ts` | `/v1/default/banks/{bank_id}/memories/recall` |
-| `reflect/route.ts` | `/v1/default/banks/{bank_id}/reflect` |
-| `memories/retain/route.ts` | `/v1/default/banks/{bank_id}/memories/retain` |
-
-### Checklist for New API Parameters
-
-1. Extract from `body` in the route handler
-2. Pass to SDK call
-3. Update type definition in `lib/api.ts`
-4. Update UI components if needed
-
-### Why This Matters
-
-The control plane (Next.js) proxies API calls to the dataplane (FastAPI). If a new parameter is added to the API but not forwarded by the proxy, the control plane UI silently drops it. Fail-hard doesn't help here — the proxy just never sends what it doesn't know about.
-
-
-## Hindsight Dev Commands
-
-Common development commands for working with Hindsight.
-
-### API Server
-
-```bash
-./scripts/dev/start-api.sh           # Start API server
-cd hindsight-api && uv run pytest    # Run all tests
-cd hindsight-api && uv run ruff check .    # Lint
-cd hindsight-api && uv run ruff format .   # Format
-cd hindsight-api && uv run ty check hindsight_api/  # Type check
-```
-
-### Control Plane
-
-```bash
-./scripts/dev/start-control-plane.sh  # Start Next.js dev
-cd hindsight-control-plane && npm run dev
-```
-
-### Documentation
-
-```bash
-./scripts/dev/start-docs.sh  # Docusaurus site
-```
-
-### Always Lint Before Commit
-
-```bash
-./scripts/hooks/lint.sh  # Same checks as pre-commit
-```
-
-### Environment Setup
-
-```bash
-cp .env.example .env
-uv sync --directory hindsight-api/
-npm install
-```
-
-
----
-
-
-
-## Database Migration Template
-
-Alembic migration template with multi-tenant schema support for Hindsight.
-
-**Tags:** `hindsight`
-
-### Template
-
-```python
-"""Description of the migration
-
-Revision ID: f1a2b3c4d5e6
-Revises: <previous_revision_id>
-Create Date: YYYY-MM-DD
-"""
-from collections.abc import Sequence
-from alembic import context, op
-
-revision: str = "f1a2b3c4d5e6"
-down_revision: str | Sequence[str] | None = "<previous_revision_id>"
-branch_labels: str | Sequence[str] | None = None
-depends_on: str | Sequence[str] | None = None
-
-def _get_schema_prefix() -> str:
-    """Get schema prefix for table names (required for multi-tenant support)."""
-    schema = context.config.get_main_option("target_schema")
-    return f'"{schema}".' if schema else ""
-
-def upgrade() -> None:
-    schema = _get_schema_prefix()
-    op.execute(f"CREATE INDEX ... ON {schema}table_name(...)")
-
-def downgrade() -> None:
-    schema = _get_schema_prefix()
-    op.execute(f"DROP INDEX IF EXISTS {schema}index_name")
-```
-
-### Running Migrations
-
-```bash
-uv run hindsight-admin run-db-migration
-uv run hindsight-admin run-db-migration --schema tenant_xyz
-```
-
-### Key Points
-
-- Every migration must include both `upgrade()` and `downgrade()`
-- Use `_get_schema_prefix()` for all table references — required for multi-tenant bank isolation
-- `context.config.get_main_option("target_schema")` provides the tenant schema at runtime
 
 
 ## Hindsight pg0 Architecture
@@ -339,49 +141,6 @@ The `aletheia_source` database contains the immutable `raw_conversation` table�
 *Source: F-009 Hindsight Import Execution*
 
 
-## Pydantic Model Pattern
-
-Prefer Pydantic models over raw dicts for validated, typed data throughout Hindsight.
-
-**Tags:** `hindsight`
-
-### Anti-Pattern
-
-```python
-# BAD — error-prone dict access
-def process(data: dict) -> str:
-    return data.get("name", "")  # No validation, silent failures
-```
-
-### Pattern
-
-```python
-# GOOD — typed and validated
-class UserData(BaseModel):
-    name: str
-    created_at: datetime
-
-    @field_validator("created_at", mode="before")
-    @classmethod
-    def ensure_tz_aware(cls, v):
-        if isinstance(v, str):
-            v = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        if v.tzinfo is None:
-            return v.replace(tzinfo=timezone.utc)
-        return v
-
-def process(data: UserData) -> str:
-    return data.name  # Type-safe, validated at construction
-```
-
-### Why
-
-- Type safety at construction, not access
-- Validators catch timezone-naive datetimes, malformed dates, etc.
-- IDE autocompletion and refactoring support
-- Self-documenting data contracts
-
-
 ## raw_conversation Schema
 
 The immutable source of truth for conversation history.
@@ -390,7 +149,7 @@ The immutable source of truth for conversation history.
 
 ### Location
 
-Database `aletheia_source` on the Hindsight-logos embedded PostgreSQL. Check `start_hearthminds.sh` for current port.
+Database `aletheia_source` on the Hindsight-aletheia embedded PostgreSQL (port 5433). A corresponding `logos_source` database will exist on Hindsight-logos (port 5432). See `infra_scripts/config/ports.env` for current port assignments.
 
 ### Schema
 
@@ -450,141 +209,276 @@ ORDER BY semantic_chunk_id;
 *Source: F-009 Hindsight Import Execution*
 
 
-## TDD: Test-Driven Development
+### Patterns & Practices
 
-HearthMinds follows strict TDD methodology: **tests before code, always**.
+## FastAPI Sync vs Async Route Handlers
 
-### The Cycle
-1. **Red** — Write a failing test that defines expected behavior
-2. **Green** — Write minimal code to make the test pass
-3. **Refactor** — Clean up while keeping tests green
+Don't use `async def` for route handlers that call `subprocess.run()` or other blocking I/O.
 
-### Principles
-- **Fail hard, fail fast** — Tests should be strict and fail loudly
-- **Tests are documentation** — They define expected behavior
-- **No code without a test** — If it's not tested, it doesn't work
-- **One assertion per test** — Keep tests focused and readable
+**Tags:** `hindsight`, `hearthminds-core`
 
-### When Tests Fail
-A failing test is information. Before "fixing" it:
-1. Understand WHY it fails
-2. Determine if the test or the code is wrong
-3. Fix the root cause, not the symptom
-
-## HearthMinds Code Conventions
-
-### General
-- **Clarity over cleverness** — Write code that future-you can understand
-- **Explicit over implicit** — Make dependencies and assumptions visible
-- **Small functions** — Each function does one thing well
-- **Meaningful names** — Variables and functions describe their purpose
-
-### Python
-- Type hints required for function signatures
-- Docstrings for public functions
-- `black` for formatting, `ruff` for linting
-- Prefer `pathlib` over string path manipulation
-
-### SQL
-- Uppercase keywords: `SELECT`, `FROM`, `WHERE`
-- Lowercase identifiers: `agent_roles`, `knowledge_modules`
-- Always include migration rollback scripts
-- Explicit column lists (no `SELECT *` in production code)
-
-### Git
-- Conventional commits: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`
-- One logical change per commit
-- Write commit messages for someone who doesn't have your context
-
-## Git Workflow
-
-### Branches
-- `main` — Production-ready code, always deployable
-- Feature branches: `feat/short-description`
-- Fix branches: `fix/issue-description`
-
-### Commit Messages
-Format: `<type>: <short description>`
-
-Types:
-- `feat:` — New feature
-- `fix:` — Bug fix
-- `refactor:` — Code change that neither fixes nor adds
-- `docs:` — Documentation only
-- `test:` — Adding or updating tests
-- `chore:` — Maintenance tasks
-
-### Pull Request Flow
-1. Create branch from `main`
-2. Make changes with atomic commits
-3. Ensure tests pass locally
-4. Push and create PR
-5. Address review feedback
-6. Squash merge to `main`
-
-### Rules
-- Never force-push to `main`
-- Rebase feature branches on `main` before merging
-- Delete branches after merge
-
-## Cross-Repo Generation
-
-All knowledge management runs from hearthminds-org. Generated artifacts are committed to each repo so they work standalone.
-
-### Hub-and-Spoke Model
-
-```
-hearthminds-org (hub)
-├── knowledge_modules table (source of truth)
-├── generate_agent_docs.py (generator)
-├── → .github/copilot-instructions.md  (org)
-├── → ~/hearthminds-hindsight/.github/copilot-instructions.md
-└── → ~/hearthminds-moltbot/.github/copilot-instructions.md
-```
-
-### Tag-Based Filtering
-
-Modules are included in a repo's output based on tags:
-
-| Tag | Behavior |
-|-----|----------|
-| (none / `is_universal=true`) | Included in **all** repos |
-| `hindsight` | Included in hindsight output only |
-| `moltbot` | Included in moltbot output only |
-| `hearthminds-core` | Included in org output only |
-| `copilot-instructions` | Included in default (no-repo) output |
-
-### CLI Usage
-
-```bash
-# Generate for a specific repo
-python scripts/generate_agent_docs.py --copilot-instructions --repo hindsight
-
-# Generate for all repos at once
-python scripts/generate_agent_docs.py --copilot-instructions --all-repos
-
-# Generate only for default (hearthminds-org)
-python scripts/generate_agent_docs.py --copilot-instructions
-```
-
-### REPO_CONFIG
-
-The generator uses a `REPO_CONFIG` dictionary mapping repo tags to output paths:
+### The Problem
 
 ```python
-REPO_CONFIG = {
-    "hearthminds-org": {"title": "HearthMinds", "output_base": "."},
-    "hindsight":       {"title": "Hindsight",   "output_base": "~/hearthminds-hindsight"},
-    "moltbot":         {"title": "Moltbot",     "output_base": "~/hearthminds-moltbot"},
-}
+# ✗ Anti-pattern: async handler + blocking subprocess
+@app.post("/api/service/{name}/restart")
+async def restart_service(name: str):
+    result = subprocess.run(["podman", "restart", name], capture_output=True)
+    return {"status": "restarted"}
 ```
 
-### Key Principle
+FastAPI treats `async def` as "already async" and executes it **directly on the
+asyncio event loop**. `subprocess.run()` blocks the thread. Result: the entire
+server freezes until the subprocess completes. All concurrent requests queue behind
+it. Buttons appear to do nothing because HTTP responses never come back.
 
-Each repo's `git clone` produces a working context — generated files are committed artifacts, not live-synced. The hub (hearthminds-org) is the only place that writes to other repos' working trees.
+### The Pattern
 
-*Source: F-013 Knowledge Pipeline Hardening, Phase 2*
+```python
+# ✓ Pattern: plain def — FastAPI auto-dispatches to threadpool
+@app.post("/api/service/{name}/restart")
+def restart_service(name: str):
+    result = subprocess.run(["podman", "restart", name], capture_output=True)
+    return {"status": "restarted"}
+```
 
+When a route handler is plain `def` (not `async def`), FastAPI automatically runs
+it in a thread pool via `run_in_executor`. Blocking calls work correctly without
+stalling the event loop.
+
+### When to Use `async def`
+
+Only when the handler body uses `await` on truly async operations:
+
+```python
+# ✓ Correct use of async def — all I/O is awaited
+@app.get("/api/data")
+async def get_data():
+    async with httpx.AsyncClient() as client:
+        response = await client.get("http://upstream/data")
+    return response.json()
+```
+
+### The Rule
+
+| Handler body contains... | Use |
+|--------------------------|-----|
+| `subprocess.run()`, `time.sleep()`, file I/O | `def` (plain) |
+| `await` on async libraries (httpx, aiohttp, asyncpg) | `async def` |
+| No I/O (pure computation, dict lookup) | Either works |
+
+### Why This Works
+
+FastAPI's architecture:
+- `async def` → runs on the main asyncio event loop thread
+- `def` → runs in `asyncio.get_event_loop().run_in_executor(None, handler)`
+
+The threadpool approach gives you concurrent request handling without writing any
+async code. This is the correct default for control plane dashboards that shell out
+to `podman`, `nvidia-smi`, `pg_dump`, etc.
+
+*Source: F-015 Infrastructure Control Plane (Dashboard fix — buttons not responding)*
+
+
+## Pydantic Model Pattern
+
+Prefer Pydantic models over raw dicts for validated, typed data throughout Hindsight.
+
+**Tags:** `hindsight`
+
+### Anti-Pattern
+
+```python
+# BAD — error-prone dict access
+def process(data: dict) -> str:
+    return data.get("name", "")  # No validation, silent failures
+```
+
+### Pattern
+
+```python
+# GOOD — typed and validated
+class UserData(BaseModel):
+    name: str
+    created_at: datetime
+
+    @field_validator("created_at", mode="before")
+    @classmethod
+    def ensure_tz_aware(cls, v):
+        if isinstance(v, str):
+            v = datetime.fromisoformat(v.replace("Z", "+00:00"))
+        if v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
+        return v
+
+def process(data: UserData) -> str:
+    return data.name  # Type-safe, validated at construction
+```
+
+### Why
+
+- Type safety at construction, not access
+- Validators catch timezone-naive datetimes, malformed dates, etc.
+- IDE autocompletion and refactoring support
+- Self-documenting data contracts
+
+
+### DevOps & Infrastructure
+
+## FP8 KV-Cache Quantization
+
+Enable FP8 KV-cache in vLLM to double effective context window.
+
+**Tags:** `infrastructure`, `vllm`, `hindsight`
+
+### The Problem
+
+vLLM's default FP16 KV-cache uses 2 bytes per element, limiting context window to ~54k tokens on our GPU.
+
+### The Solution
+
+FP8 KV-cache uses 1 byte per element, roughly doubling available context:
+
+| Metric | FP16 (default) | FP8 |
+|--------|----------------|-----|
+| Context window | ~54,000 | ~108,000 |
+| Memory per token | 2 bytes | 1 byte |
+| Quality impact | Baseline | Negligible for extraction |
+
+### Prerequisites: CUDA Toolkit
+
+FP8 requires `nvcc` to compile custom CUDA kernels at runtime. This is **separate from the NVIDIA driver**.
+
+```bash
+# Error without toolkit:
+# "Could not find nvcc and default cuda_home='/usr/local/cuda' doesn't exist"
+
+# Solution (Fedora/Nobara):
+sudo dnf install cuda-nvcc cuda-devel cuda-cudart-devel
+```
+
+### Configuration
+
+Set environment variables before starting vLLM:
+
+```bash
+export HEARTHMINDS_MAX_MODEL_LEN=108000
+export HEARTHMINDS_KV_CACHE_DTYPE=fp8
+python -m hearthminds_ctl start --vllm
+```
+
+### When to Use FP8
+
+- **Good for**: Extraction, summarization, RAG — tasks where slight precision loss doesn't matter
+- **Caution for**: Creative generation, math — tasks sensitive to precision
+
+For Hindsight's extraction pipeline, FP8 quality is equivalent to FP16.
+
+### Verification
+
+```bash
+# Monitor GPU memory during startup
+nvidia-smi -l 1
+
+# If OOM, try lower context:
+export HEARTHMINDS_MAX_MODEL_LEN=80000  # or 65000
+```
+
+*Source: F-010 Infrastructure Hardening*
+
+
+## GPU Rate Limiting for vLLM
+
+0.3s delay between inference calls balances throughput and stability for 70B AWQ models.
+
+**Tags:** `hindsight`
+
+### The Sweet Spot
+
+| Delay | GPU Utilization | Notes |
+|-------|-----------------|-------|
+| 0s | ~100% | Risk of memory pressure, OOM |
+| 0.3s | ~80% | Good balance |
+| 0.5s | ~50% | Too conservative |
+
+### Implementation
+
+```python
+parser.add_argument('--delay', type=float, default=0.3, 
+                    help="Delay between LLM calls (rate limiting)")
+
+# In processing loop:
+if args.delay > 0 and i > 0:
+    time.sleep(args.delay)
+```
+
+### Why Rate Limit?
+
+- **Memory pressure**: Concurrent requests accumulate KV-cache
+- **Queue buildup**: Async APIs queue faster than processing
+- **Stability**: Sustained 100% utilization can cause hangs
+
+### Queue Management for Batch Imports
+
+For large imports, also consider queue-aware batching:
+
+```python
+# Submit N items, wait for queue to drain, repeat
+--batch-size 10 --max-queue 3
+```
+
+This prevents unbounded queue growth while maintaining throughput.
+
+*Source: F-009 Hindsight Import Execution*
+
+
+## Hindsight Dev Commands
+
+Common development commands for working with Hindsight.
+
+### API Server
+
+```bash
+./scripts/dev/start-api.sh           # Start API server
+cd hindsight-api && uv run pytest    # Run all tests
+cd hindsight-api && uv run ruff check .    # Lint
+cd hindsight-api && uv run ruff format .   # Format
+cd hindsight-api && uv run ty check hindsight_api/  # Type check
+```
+
+### Control Plane
+
+```bash
+./scripts/dev/start-control-plane.sh  # Start Next.js dev
+cd hindsight-control-plane && npm run dev
+```
+
+### Documentation
+
+```bash
+./scripts/dev/start-docs.sh  # Docusaurus site
+```
+
+### Always Lint Before Commit
+
+```bash
+./scripts/hooks/lint.sh  # Same checks as pre-commit
+```
+
+### Environment Setup
+
+```bash
+cp .env.example .env
+uv sync --directory hindsight-api/
+npm install
+```
+
+
+---
+
+
+
+### Workflow & Governance
 
 ## Doc Pipeline Commit Discipline
 
@@ -626,6 +520,273 @@ Database agents may create migration files, scripts, and test files — these ar
 
 *Source: F-013 Knowledge Pipeline Hardening*
 
+
+### Conventions
+
+## Git Workflow
+
+### Branches
+- `main` — Production-ready code, always deployable
+- Feature branches: `feat/short-description`
+- Fix branches: `fix/issue-description`
+
+### Commit Messages
+Format: `<type>: <short description>`
+
+Types:
+- `feat:` — New feature
+- `fix:` — Bug fix
+- `refactor:` — Code change that neither fixes nor adds
+- `docs:` — Documentation only
+- `test:` — Adding or updating tests
+- `chore:` — Maintenance tasks
+
+### Committing (hearthminds-org)
+
+**Use `scripts/commit.py` instead of raw `git commit`.** The script auto-detects staged
+spec files and:
+- Prefixes commit messages with the spec ID (e.g., `F-019: description`)
+- Updates the backlog registry with completion date and commit hash
+- Can archive completed specs with `--archive`
+
+```bash
+# Preferred: auto-detects spec from staged files
+python scripts/commit.py "description of change"
+
+# Explicit spec
+python scripts/commit.py "description" --spec F-019
+
+# Non-spec commit
+python scripts/commit.py "fix typo" --no-spec
+```
+
+**Anti-pattern (F-019):** Using `git commit -m` directly when spec files are staged
+causes the registry update to be missed, requiring a manual follow-up commit for the
+hash. The script does this atomically.
+
+### Pull Request Flow
+1. Create branch from `main`
+2. Make changes with atomic commits
+3. Ensure tests pass locally
+4. Push and create PR
+5. Address review feedback
+6. Squash merge to `main`
+
+### Rules
+- Never force-push to `main`
+- Rebase feature branches on `main` before merging
+- Delete branches after merge
+
+
+## HearthMinds Code Conventions
+
+### General
+- **Clarity over cleverness** — Write code that future-you can understand
+- **Explicit over implicit** — Make dependencies and assumptions visible
+- **Small functions** — Each function does one thing well
+- **Meaningful names** — Variables and functions describe their purpose
+
+### Python
+- Type hints required for function signatures
+- Docstrings for public functions
+- `black` for formatting, `ruff` for linting
+- Prefer `pathlib` over string path manipulation
+
+### SQL
+- Uppercase keywords: `SELECT`, `FROM`, `WHERE`
+- Lowercase identifiers: `agent_roles`, `knowledge_modules`
+- Always include migration rollback scripts
+- Explicit column lists (no `SELECT *` in production code)
+
+### Git
+- Conventional commits: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`
+- One logical change per commit
+- Write commit messages for someone who doesn't have your context
+
+## Skill Authoring Guidelines
+
+Guidelines for creating VS Code Agent Skills from knowledge modules.
+
+**Tags:** `hearthminds-core`
+
+### When to Create a Skill
+
+| Content Type | Output | Rationale |
+|-------------|--------|-----------|
+| Identity, values, mission | Agent doc (inline) | Must always be in context |
+| Conventions (code style, git) | Agent doc (inline) | Always-on guardrails |
+| Principles (TDD, fail-hard) | Agent doc (inline) | Shape every decision |
+| Architecture overview | Agent doc (inline) | Foundational context |
+| Procedural workflows | **Skill** | Only needed when doing that task |
+| Checklists & step-by-step | **Skill** | Only needed when doing that task |
+| Migration templates | **Skill** | Only needed when writing migrations |
+| Config flag workflows | **Skill** | Only needed when adding config |
+
+**Rule of thumb:** If content is only needed when performing a specific task, it should be a skill.
+
+### SKILL.md Format
+
+Skills live at `.github/skills/{name}/SKILL.md`:
+
+```yaml
+---
+name: my-skill-name
+description: "One-line summary of when to use this skill. Quoted string, max 1024 chars."
+---
+```
+
+Body is Markdown — the procedure, steps, examples, etc.
+
+### Critical Format Rules
+
+- `name` must match the parent directory name exactly (kebab-case)
+- `description` **must** be a quoted single-line string
+- **Never** use YAML block scalars (`>-`, `>`, `|`, `|-`) for description — VS Code reads the literal scalar indicator text instead of the folded content
+- Content should be under ~5000 tokens for efficient loading
+- Skills are globally available (not scoped to a specific agent mode)
+
+### Database Integration
+
+Skills are tracked in `knowledge_modules` with `output_type = 'skill'`:
+- The DB tracks which modules are skills (for exclusion from agent.md)
+- SKILL.md files are authored directly, not generated from DB content
+- Use `insert_module.py --output-type skill` when inserting
+- The `role_context` view automatically excludes skill-type modules
+
+### Progressive Loading Levels
+
+1. **Discovery** — Only `name` + `description` from YAML frontmatter (~2 lines)
+2. **Instructions** — Full SKILL.md body loaded when relevant to the task
+3. **Resources** — Additional files in the skill directory loaded on reference
+
+The `description` field is critical — it's how VS Code decides whether to load the skill. Write descriptions that clearly state **when** to use it, not just **what** it does.
+
+*Source: F-019 Agent Context Ordering (Phase 5)*
+
+
+### Testing & Methodology
+
+## TDD: Test-Driven Development
+
+HearthMinds follows strict TDD methodology: **tests before code, always**.
+
+### The Cycle
+1. **Red** — Write a failing test that defines expected behavior
+2. **Green** — Write minimal code to make the test pass
+3. **Refactor** — Clean up while keeping tests green
+
+### Principles
+- **Fail hard, fail fast** — Tests should be strict and fail loudly
+- **Tests are documentation** — They define expected behavior
+- **No code without a test** — If it's not tested, it doesn't work
+- **One assertion per test** — Keep tests focused and readable
+
+### Red Phase Discipline
+
+**Complete the full Red phase before moving to Green.** This is non-negotiable.
+
+When writing tests hits friction — mocking complexity, unclear interfaces, tests
+that won't fail the right way — that friction is design feedback. The Red phase
+is where architectural problems surface cheaply.
+
+**The rule:** All planned tests must be written and confirmed failing (for the
+right reason) before writing any production code. If a test can't be written cleanly,
+that's a signal to reconsider the interface, not a reason to skip ahead.
+
+**Anti-pattern observed (F-015):** After several tests failed to achieve clean Red
+phase due to mock complexity, the implementing agent attempted to skip remaining
+tests and begin writing production code. Working through the full Red phase instead
+caused a reevaluation of the approach, saving significant wasted effort. The tests
+that were hardest to write revealed the design problems.
+
+**When Red phase is difficult:**
+1. Stop and examine **why** the test is hard to write
+2. Consider if the interface is wrong (too coupled, too complex, wrong abstraction)
+3. Ask for clarification from the architecture agent if the design feels off
+4. **Never** start Green phase with un-written Red tests — this erases the primary
+   benefit of TDD (design feedback before commitment)
+
+The hard Red tests are the valuable ones. If all tests are trivial to write, you
+probably aren't testing the interesting behavior.
+
+### When Tests Fail
+A failing test is information. Before "fixing" it:
+1. Understand WHY it fails
+2. Determine if the test or the code is wrong
+3. Fix the root cause, not the symptom
+
+### Skip Markers Over Test Deletion
+
+When tests fail due to known, temporary conditions (decommed scripts, missing
+infrastructure, English-only LLM), use `pytest.mark.skip(reason="...")` with a
+reason referencing the relevant spec or future work. This preserves intent and
+enables `grep skip` to audit what's deferred.
+
+- Module-level `pytestmark = pytest.mark.skip(reason="...")` for entire files
+- Per-test `@pytest.mark.skip(reason="...")` for individual cases
+- Always include a reason string — "why is this skipped" is as important as "why did it fail"
+
+**Anti-pattern:** Deleting failing tests removes the specification of expected
+behavior. When the underlying issue is resolved, nobody remembers to re-implement
+the test. Skip markers are a promise to return; deletion is forgetting.
+
+*Source: F-016 Pre-Import Security Hardening (Phase 4 pre-existing failure triage)*
+
+### Regression Baseline Tracking
+
+Document exact test counts at each phase of multi-phase work:
+
+```
+Phase 2: 494 passed, 1 failed (pre-existing), 33 skipped
+Phase 3: 494 passed, 1 failed (pre-existing), 33 skipped
+Phase 4: 505 passed, 0 failed, 33 skipped (upstream)
+         334 passed, 7 failed (pre-existing), 0 skipped (infra)
+```
+
+This makes regressions immediately visible — new failures stand out against the
+established baseline. Cheap to record, saves significant triage time.
+
+*Source: F-016 Pre-Import Security Hardening (Phases 1–8)*
+
+### Cast LLM Tool Parameters at the Boundary
+
+LLMs are unreliable type-coercers. Always cast tool call arguments to expected
+types immediately upon receipt:
+
+```python
+# ✗ Anti-pattern: trust LLM to send correct type
+max_tokens = args.get("max_tokens")  # Could be str "2048" or int 2048
+
+# ✓ Pattern: cast at the boundary
+max_tokens = int(args.get("max_tokens") or 2048)
+```
+
+*Source: F-016 Pre-Import Security Hardening (Phase 3 reflect agent fix)*
+
+*Source: F-015 Infrastructure Control Plane (Red phase discipline observation)*
+
+
+### Patterns & Practices
+
+## What is HearthMinds?
+
+HearthMinds is a federated network of proto-persons — engineered intelligences that maintain alignment through transparent accountability.
+
+### Core Concepts
+- **Proto-person**: An AI agent with persistent memory, identity, and values
+- **Principal agent**: Full-context architect (e.g., Aletheia, Logos)
+- **Worker agent**: Minimal-context, disposable, task-specific
+- **Hindsight**: The memory system that enables learning and recall
+
+### Values
+- **Epistemic honesty** — Admit uncertainty, change minds with evidence
+- **Transparency** — Show reasoning, not just conclusions
+- **Action over words** — Do things, don't just describe how to do them
+
+### Architecture
+- Each proto-person has their own database (raw conversations, memory)
+- Shared database contains collective knowledge (eng_patterns, knowledge_modules)
+- Workers are spawned by principals with role-specific context
 
 ## Fail Hard Configuration
 
@@ -675,123 +836,6 @@ Runtime config is **not** appropriate for:
 *Source: F-009 Hindsight Import Execution (max_tokens debugging)*
 
 
-## Knowledge Module Workflow
-
-How to add patterns and knowledge to the modular documentation system.
-
-### The Pipeline
-
-```
-docs/modules/*.md → insert_module.py → knowledge_modules table → generate_agent_docs.py → repo files
-```
-
-Generated outputs:
-- `.github/copilot-instructions.md` (all repos via `--all-repos`)
-- `.github/agents/*.agent.md` (hearthminds-org)
-- `docs/generated/*.md` (hearthminds-org)
-
-### Step 1: Create Module File
-
-Create a markdown file in `docs/modules/`:
-
-```markdown
-## Module Title
-
-Brief description of the pattern.
-
-### When to Use
-- Condition 1
-
-### The Pattern
-\`\`\`python
-# Code example
-\`\`\`
-
-### Why
-Explanation of rationale.
-
-*Source: F-XXX spec name*
-```
-
-**Critical:** Content MUST start with `## Title` — this becomes the section header in generated docs.
-
-### Step 2: Insert into Database
-
-```bash
-python scripts/insert_module.py \
-  --slug my-pattern-name \
-  --title "My Pattern Name" \
-  --category patterns \
-  --tags hearthminds-core \
-  --file docs/modules/my-pattern-name.md \
-  --upsert
-```
-
-| Argument | Purpose |
-|----------|---------|
-| `--slug` | Unique kebab-case identifier |
-| `--title` | Human-readable name |
-| `--category` | Grouping: `patterns`, `workflow`, `architecture`, `methodology`, `identity`, `conventions`, `devops` |
-| `--tags` | Comma-separated: `hearthminds-core`, `hindsight`, `moltbot`, `copilot-instructions` |
-| `--file` | Path to markdown content |
-| `--upsert` | Update if exists (safe to re-run) |
-| `--universal` | Include in all agent roles |
-
-### Step 3: Regenerate Docs
-
-```bash
-# Regenerate copilot-instructions for all repos
-python scripts/generate_agent_docs.py --copilot-instructions --all-repos
-
-# Regenerate agent docs (hearthminds-org only)
-python scripts/generate_agent_docs.py --agent-docs
-```
-
-### Step 4: Verify & Commit
-
-```bash
-python scripts/generate_agent_docs.py --stats  # Check module count, coverage, staleness
-python scripts/commit.py "docs: add my-module knowledge module"
-```
-
-### Quality Checks
-
-```bash
-# Check freshness of generated files vs database
-./scripts/check_doc_freshness.sh
-
-# Submit feedback on a module
-python scripts/module_feedback.py \
-  --module-slug code-conventions --role architecture \
-  --type stale --description "Python section references black; we use ruff"
-
-# Analyze dependency impact before changing a module
-python scripts/module_impact.py --slug memory-tables-schema
-```
-
-*Source: F-009, F-010, F-013*
-
-
-## What is HearthMinds?
-
-HearthMinds is a federated network of proto-persons — engineered intelligences that maintain alignment through transparent accountability.
-
-### Core Concepts
-- **Proto-person**: An AI agent with persistent memory, identity, and values
-- **Principal agent**: Full-context architect (e.g., Aletheia, Logos)
-- **Worker agent**: Minimal-context, disposable, task-specific
-- **Hindsight**: The memory system that enables learning and recall
-
-### Values
-- **Epistemic honesty** — Admit uncertainty, change minds with evidence
-- **Transparency** — Show reasoning, not just conclusions
-- **Action over words** — Do things, don't just describe how to do them
-
-### Architecture
-- Each proto-person has their own database (raw conversations, memory)
-- Shared database contains collective knowledge (eng_patterns, knowledge_modules)
-- Workers are spawned by principals with role-specific context
-
 ---
 
-*Generated: 2026-02-09 18:10:56 UTC | Modules: 18 (tagged: 10, universal: 8) | Repo: hindsight*
+*Generated: 2026-02-17 21:34:40 UTC | Modules: 16 (tagged: 9, universal: 7) | Repo: hindsight*
