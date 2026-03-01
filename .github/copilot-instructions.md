@@ -478,49 +478,6 @@ npm install
 
 
 
-### Workflow & Governance
-
-## Doc Pipeline Commit Discipline
-
-Only the documentation agent commits generated context files. This is a pipeline rule, not a suggestion.
-
-### The Rule
-
-The documentation agent owns the generate → commit cycle for:
-- `.github/copilot-instructions.md` (all repos)
-- `.github/agents/*.agent.md` (hearthminds-org)
-- `docs/generated/*.md` (hearthminds-org)
-
-Other agents (architecture, database, testing, etc.) **propose** module content. The documentation agent reviews, inserts, regenerates, and commits.
-
-### Why
-
-This prevents three failure modes:
-1. **Direct editing** — Generated files edited by hand, bypassing the database (source of truth drift)
-2. **Conflicting regeneration** — Multiple agents running `generate_agent_docs.py` and committing different outputs
-3. **Context drift** — Database state and committed files get out of sync
-
-### The Workflow
-
-```
-Any agent: writes pattern/content → docs/modules/my-pattern.md
-Documentation agent: reviews → insert_module.py → generate_agent_docs.py → commit
-```
-
-### When to Regenerate
-
-After any session that modifies:
-- Knowledge modules (insert, update, delete)
-- Agent roles (new role, changed description)
-- Role-module mappings (role_modules table)
-
-### Exception
-
-Database agents may create migration files, scripts, and test files — these are source artifacts, not generated outputs. The commit discipline applies only to **generated** documentation files.
-
-*Source: F-013 Knowledge Pipeline Hardening*
-
-
 ### Conventions
 
 ## Git Workflow
@@ -664,108 +621,6 @@ The `description` field is critical — it's how VS Code decides whether to load
 *Source: F-019 Agent Context Ordering (Phase 5)*
 
 
-### Testing & Methodology
-
-## TDD: Test-Driven Development
-
-HearthMinds follows strict TDD methodology: **tests before code, always**.
-
-### The Cycle
-1. **Red** — Write a failing test that defines expected behavior
-2. **Green** — Write minimal code to make the test pass
-3. **Refactor** — Clean up while keeping tests green
-
-### Principles
-- **Fail hard, fail fast** — Tests should be strict and fail loudly
-- **Tests are documentation** — They define expected behavior
-- **No code without a test** — If it's not tested, it doesn't work
-- **One assertion per test** — Keep tests focused and readable
-
-### Red Phase Discipline
-
-**Complete the full Red phase before moving to Green.** This is non-negotiable.
-
-When writing tests hits friction — mocking complexity, unclear interfaces, tests
-that won't fail the right way — that friction is design feedback. The Red phase
-is where architectural problems surface cheaply.
-
-**The rule:** All planned tests must be written and confirmed failing (for the
-right reason) before writing any production code. If a test can't be written cleanly,
-that's a signal to reconsider the interface, not a reason to skip ahead.
-
-**Anti-pattern observed (F-015):** After several tests failed to achieve clean Red
-phase due to mock complexity, the implementing agent attempted to skip remaining
-tests and begin writing production code. Working through the full Red phase instead
-caused a reevaluation of the approach, saving significant wasted effort. The tests
-that were hardest to write revealed the design problems.
-
-**When Red phase is difficult:**
-1. Stop and examine **why** the test is hard to write
-2. Consider if the interface is wrong (too coupled, too complex, wrong abstraction)
-3. Ask for clarification from the architecture agent if the design feels off
-4. **Never** start Green phase with un-written Red tests — this erases the primary
-   benefit of TDD (design feedback before commitment)
-
-The hard Red tests are the valuable ones. If all tests are trivial to write, you
-probably aren't testing the interesting behavior.
-
-### When Tests Fail
-A failing test is information. Before "fixing" it:
-1. Understand WHY it fails
-2. Determine if the test or the code is wrong
-3. Fix the root cause, not the symptom
-
-### Skip Markers Over Test Deletion
-
-When tests fail due to known, temporary conditions (decommed scripts, missing
-infrastructure, English-only LLM), use `pytest.mark.skip(reason="...")` with a
-reason referencing the relevant spec or future work. This preserves intent and
-enables `grep skip` to audit what's deferred.
-
-- Module-level `pytestmark = pytest.mark.skip(reason="...")` for entire files
-- Per-test `@pytest.mark.skip(reason="...")` for individual cases
-- Always include a reason string — "why is this skipped" is as important as "why did it fail"
-
-**Anti-pattern:** Deleting failing tests removes the specification of expected
-behavior. When the underlying issue is resolved, nobody remembers to re-implement
-the test. Skip markers are a promise to return; deletion is forgetting.
-
-*Source: F-016 Pre-Import Security Hardening (Phase 4 pre-existing failure triage)*
-
-### Regression Baseline Tracking
-
-Document exact test counts at each phase of multi-phase work:
-
-```
-Phase 2: 494 passed, 1 failed (pre-existing), 33 skipped
-Phase 3: 494 passed, 1 failed (pre-existing), 33 skipped
-Phase 4: 505 passed, 0 failed, 33 skipped (upstream)
-         334 passed, 7 failed (pre-existing), 0 skipped (infra)
-```
-
-This makes regressions immediately visible — new failures stand out against the
-established baseline. Cheap to record, saves significant triage time.
-
-*Source: F-016 Pre-Import Security Hardening (Phases 1–8)*
-
-### Cast LLM Tool Parameters at the Boundary
-
-LLMs are unreliable type-coercers. Always cast tool call arguments to expected
-types immediately upon receipt:
-
-```python
-# ✗ Anti-pattern: trust LLM to send correct type
-max_tokens = args.get("max_tokens")  # Could be str "2048" or int 2048
-
-# ✓ Pattern: cast at the boundary
-max_tokens = int(args.get("max_tokens") or 2048)
-```
-
-*Source: F-016 Pre-Import Security Hardening (Phase 3 reflect agent fix)*
-
-*Source: F-015 Infrastructure Control Plane (Red phase discipline observation)*
-
-
 ### Patterns & Practices
 
 ## What is HearthMinds?
@@ -838,4 +693,4 @@ Runtime config is **not** appropriate for:
 
 ---
 
-*Generated: 2026-02-17 21:34:40 UTC | Modules: 16 (tagged: 9, universal: 7) | Repo: hindsight*
+*Generated: 2026-03-01 16:07:06 UTC | Modules: 14 (tagged: 9, universal: 5) | Repo: hindsight*
