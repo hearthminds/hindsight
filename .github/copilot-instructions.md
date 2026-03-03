@@ -356,6 +356,149 @@ Runtime config is **not** appropriate for:
 *Source: F-009 Hindsight Import Execution (max_tokens debugging)*
 
 
+## Deferred GPU Import Pattern
+
+When writing Python scripts that use GPU-dependent packages (PEFT, TRL, torch, gptqmodel, transformers), defer imports inside the function that needs them rather than at module level.
+
+**Tags:** `hearthminds-core`
+
+### The Problem
+
+Training scripts import heavy ML packages at module level. This prevents unit testing of pure logic (path construction, validation, config parsing, manifest writing) on dev machines that lack GPU packages or a training venv.
+
+```python
+# ✗ Anti-pattern: Top-level GPU imports
+import torch
+from peft import LoraConfig, get_peft_model
+from trl import SFTTrainer
+
+def build_output_path(pp: str, output_dir: str) -> str:
+    """Pure path logic — no GPU needed, but import fails without torch."""
+    return f"{output_dir}/{pp}-{date.today().strftime('%Y%m%d')}"
+```
+
+### The Pattern
+
+Import GPU-dependent packages inside the function that actually uses them. Keep pure logic functions (paths, validation, config, manifests) importable without any ML packages.
+
+```python
+# ✓ Pattern: Deferred GPU imports
+def build_output_path(pp: str, output_dir: str) -> str:
+    """Pure path logic — importable anywhere."""
+    return f"{output_dir}/{pp}-{date.today().strftime('%Y%m%d')}"
+
+def train(data_path: str, output_dir: str, rank: int = 16) -> dict:
+    """Training function — GPU imports deferred to here."""
+    import torch
+    from peft import LoraConfig, get_peft_model
+    from trl import SFTTrainer
+    from gptqmodel import GPTQModel
+    # ... training logic
+```
+
+### Why This Matters
+
+- **Testability:** Unit tests for path logic, validation, manifest I/O, and config parsing run on dev machines (no GPU, no training venv) in <1 second
+- **Venv isolation:** The org venv (psycopg, click, fastapi) doesn't need ML packages. The training venv (PEFT, TRL, torch) doesn't need infrastructure packages. Tests run in the org venv.
+- **Fast feedback:** 23 tests for `lora_train.py` run in 0.20s on the dev machine despite the script requiring 2× RTX 5090 GPUs at runtime
+
+### When to Apply
+
+- Any script that combines pure Python logic with GPU-dependent operations
+- Scripts that will be tested in a different venv than where they run in production
+- CLI tools with `--dry-run` flags that validate setup without invoking GPU code
+
+### Complementary Pattern
+
+Use `--dry-run` to validate that deferred imports will succeed at runtime:
+
+```python
+def preflight_check(data_path: str, output_dir: str) -> None:
+    """Validate everything possible before committing GPU time."""
+    # Check packages are importable (catches missing venv)
+    for pkg in ["peft", "trl", "gptqmodel", "torch"]:
+        importlib.import_module(pkg)
+    # Check GPU available
+    import torch
+    if not torch.cuda.is_available():
+        raise RuntimeError("No CUDA GPU available")
+```
+
+*Source: F-022 LoRA Training Pipeline (Phase 3)*
+
+
+## Multi-Venv Pipeline Orchestration
+
+When a pipeline spans multiple Python virtual environments with incompatible dependencies, use a shell orchestrator with explicit venv binaries and file-based data handoff.
+
+**Tags:** `hearthminds-core`
+
+### The Problem
+
+Some workflows require packages that conflict or don't belong together:
+- **Training venv:** PEFT, TRL, gptqmodel, torch (GPU, ML-specific)
+- **Org venv:** psycopg, click, fastapi, hearthminds_ctl (infrastructure)
+
+Installing everything in one venv creates dependency conflicts, bloat, and unclear ownership. But the pipeline needs both: extract data (org venv) → train model (training venv) → update DB (org venv).
+
+### The Pattern
+
+1. **Explicit venv variables** — Reference each venv's Python binary directly:
+   ```bash
+   ORG_PYTHON="$HOME/hearthminds/.venv/bin/python"
+   TRAINING_PYTHON="$HOME/lora-training/.venv/bin/python"
+   ```
+
+2. **File-based data handoff** — Pass data between venvs via files, not function calls:
+   - JSONL for training data (extraction → training)
+   - JSON manifests for metadata (training → DB update)
+
+3. **Shell orchestrator** — A bash script sequences the steps, calling each venv's Python for its stage:
+   ```bash
+   # Step 1: Extract (org venv — has psycopg for DB access)
+   "$ORG_PYTHON" scripts/extract_training_data.py --output "$DATA_FILE"
+
+   # Step 2: Train (training venv — has PEFT/TRL/torch)
+   "$TRAINING_PYTHON" scripts/lora_train.py --data "$DATA_FILE"
+
+   # Step 3: Update DB (org venv — reads manifest written by training)
+   "$ORG_PYTHON" scripts/update_lora_trained.py --manifest "$MANIFEST"
+   ```
+
+### Why This Matters
+
+- **No cross-contamination:** Each venv contains only what it needs
+- **Clear failure boundaries:** If training fails, the org venv is unaffected
+- **Independent updates:** Upgrade torch without touching psycopg
+- **Testable in isolation:** Each script's pure logic is testable in the org venv (via deferred GPU imports)
+
+### Design Rules
+
+1. **Each script is self-contained** — No cross-venv Python imports. Data flows via files only.
+2. **Manifests are the contract** — The training script writes a JSON manifest (metrics, file paths, processed IDs). Downstream scripts read it. The manifest is the handoff artifact.
+3. **Service management uses the org venv** — Infrastructure tools (`hearthminds_ctl`) live in the org venv. The orchestrator calls `$ORG_PYTHON -m hearthminds_ctl stop --vllm`, not a direct `pkill`.
+4. **Recovery uses the org venv** — On failure, the orchestrator restarts services via `$ORG_PYTHON`, not the training venv.
+
+### Anti-patterns
+
+```bash
+# ✗ Activating venvs inside the script (fragile, state leaks)
+source ~/training/.venv/bin/activate
+python scripts/train.py
+deactivate
+source ~/org/.venv/bin/activate
+python scripts/update_db.py
+
+# ✗ Cross-venv Python imports (broken by design)
+from training_package import something  # Not in this venv
+
+# ✗ Passing data via environment variables (size limits, serialization)
+export TRAINED_IDS="id1,id2,id3,..."  # Breaks at scale
+```
+
+*Source: F-022 LoRA Training Pipeline (Phase 5, AD-34, AD-35)*
+
+
 ## PostgreSQL Migration Testing Patterns
 
 Patterns for testing database migrations safely using PostgreSQL's transactional DDL.
@@ -666,4 +809,4 @@ When execution agents hit design questions:
 
 ---
 
-*Generated: 2026-03-03 14:45:49 UTC | Modules: 11 (tagged: 3, universal: 8) | Repo: hindsight*
+*Generated: 2026-03-03 16:36:56 UTC | Modules: 13 (tagged: 3, universal: 10) | Repo: hindsight*
