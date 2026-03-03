@@ -356,6 +356,314 @@ Runtime config is **not** appropriate for:
 *Source: F-009 Hindsight Import Execution (max_tokens debugging)*
 
 
+## PostgreSQL Migration Testing Patterns
+
+Patterns for testing database migrations safely using PostgreSQL's transactional DDL.
+
+**Tags:** `hearthminds-core`
+
+### PostgreSQL Supports Transactional DDL — Use It
+
+Unlike MySQL, PostgreSQL allows `CREATE TABLE`, `DROP TABLE`, `CREATE INDEX`,
+and most DDL statements to participate in transactions. This means migration
+tests can run destructive operations (including rollback tests that `DROP TABLE`)
+inside a transaction, then `ROLLBACK` to leave the database untouched.
+
+```python
+# ✓ Pattern: Transactional DDL test isolation
+@pytest.fixture
+def conn():
+    connection = psycopg.connect(DSN, autocommit=False)  # Key: autocommit=False
+    yield connection
+    connection.rollback()  # All DDL reversed — production tables untouched
+    connection.close()
+```
+
+**Anti-pattern:** Running migration tests with `autocommit=True` against a database
+that has real data. A rollback test that executes `DROP TABLE` will destroy the
+production table permanently.
+
+```python
+# ✗ Anti-pattern: autocommit=True
+connection = psycopg.connect(DSN, autocommit=True)
+# Migration test runs DROP TABLE — production data is gone forever
+```
+
+This actually happened during F-022 Phase 1. The test suite dropped
+`alignment_log` from `aletheia_source` and required manual reapplication.
+
+### Strip BEGIN/COMMIT from Migration SQL
+
+Migration files typically include their own transaction control:
+
+```sql
+BEGIN;
+CREATE TABLE alignment_log (...);
+COMMIT;
+```
+
+When executing inside a test fixture's enclosing transaction, these must be
+stripped or they commit prematurely, breaking isolation:
+
+```python
+def _execute_sql(conn, sql_path: Path) -> None:
+    """Execute migration SQL inside an existing transaction."""
+    sql = sql_path.read_text()
+    # Strip transaction control — the test fixture manages the transaction
+    sql = sql.replace("BEGIN;", "").replace("COMMIT;", "")
+    conn.execute(sql)
+```
+
+### Use SAVEPOINT for Expected-Error Assertions
+
+In PostgreSQL, any error inside a transaction aborts the entire transaction
+(unlike some databases that allow continuation after errors). When testing
+expected failures (e.g., FK violations via `pytest.raises`), wrap the
+assertion in a `SAVEPOINT`:
+
+```python
+def test_fk_violation(conn):
+    # Set up schema...
+    conn.execute("SAVEPOINT fk_test")
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        conn.execute("INSERT INTO alignment_log (raw_conversation_id, ...) VALUES ('nonexistent', ...)")
+    conn.execute("ROLLBACK TO SAVEPOINT fk_test")
+    # Transaction is still usable for further assertions
+```
+
+Without the savepoint, the `ForeignKeyViolation` aborts the transaction,
+and all subsequent SQL in the test fails with `InFailedSqlTransaction`.
+
+### Summary of the Three Patterns
+
+| Pattern | Why |
+|---------|-----|
+| `autocommit=False` + `rollback()` teardown | DDL doesn't touch production |
+| Strip `BEGIN;`/`COMMIT;` from migration SQL | Doesn't break enclosing transaction |
+| `SAVEPOINT` around expected errors | Keeps transaction usable after intentional failures |
+
+*Source: F-022 LoRA Training Pipeline (Phase 1 Lessons Learned)*
+
+
+### Governance
+
+## Spec Workflow Routing
+
+Every spec must declare an execution path through the team: who builds, who supports, and where handoffs occur.
+
+### Required Frontmatter
+
+```yaml
+---
+id: F-013
+title: Knowledge Pipeline Hardening
+assigned: database        # Primary executor
+support: documentation    # Secondary / review role
+pipeline: full            # full | short | refactor-only
+depends_on: null          # Spec dependencies
+blocks: null              # What this blocks
+---
+```
+
+### Pipeline Paths
+
+Architecture declares the pipeline path at spec creation time. This prevents
+expert agents from self-selecting a shorter path to skip process steps.
+
+| Path | When to use | Flow |
+|------|------------|------|
+| `full` | Features, multi-phase specs, infrastructure | architecture → expert+subagent → refactor → documentation |
+| `short` | Bug fixes, single-file changes, test additions | expert+subagent → documentation |
+| `refactor-only` | Code consistency, tech debt cleanup | refactor+subagent → documentation |
+
+**Pipeline flow:**
+```
+Architecture agent
+  └─ Owns spec, does not execute code
+  └─ Answers design questions via ADs written into the spec
+  └─ Declares pipeline path in spec frontmatter
+
+Expert agent (database, devops, security, etc.)
+  └─ Calls subagent for red-phase (adversarial tests)
+  └─ Performs green + refactor
+  └─ Updates spec with patterns/anti-patterns/lessons learned
+
+Refactor agent (optional — reviews for code consistency)
+  └─ Can call red-phase subagent if adding/modifying tests
+  └─ Updates spec with additional patterns/lessons learned
+
+Documentation agent
+  └─ Decomposes spec lessons into knowledge modules
+  └─ Inserts into DB, regenerates docs
+  └─ Commits ALL pipeline output (source + generated) across all repos
+```
+
+*Source: F-021 Team Pipeline Hardening (AD-25, architecture review)*
+
+### Why Route Specs?
+
+Without explicit routing:
+- Architecture agents try to commit generated files (documentation agent's job)
+- Database agents try to regenerate docs (documentation agent's job)
+- Documentation agents try to create migrations (database agent's job)
+
+### Routing Rules
+
+| Activity | Owner |
+|----------|-------|
+| Schema migrations, SQL scripts | database agent |
+| Generated context files (copilot-instructions, agent.md) | documentation agent |
+| Infrastructure scripts (start, backup, deploy) | devops or database agent |
+| Test files | testing agent or the assigned agent |
+| Spec creation and updates | architecture agent (or assigned agent) |
+| Committing all pipeline output | documentation agent (sole committer) |
+
+### Spec Ownership Discipline
+
+**Architecture owns spec creation and updates.** When the architecture agent provides
+design guidance (answering clarifying questions, making decisions, resolving trade-offs),
+that guidance must be written into the spec file — not returned as stdout to the
+requesting agent.
+
+**Anti-pattern observed (F-015):** Architecture was asked clarifying questions about
+sync vs async, config format, Hindsight modeling, and org table provisioning. Instead
+of creating the initial spec document or updating the spec directly, architecture
+returned guidance as conversation output. The devops agent then had to incorporate
+those decisions manually. This risks:
+
+1. **Context loss** — Decisions exist in chat history, not in the spec
+2. **Misinterpretation** — Devops agent paraphrases instead of captures verbatim
+3. **Skipped updates** — Architecture answers get applied to code but never reach the spec
+
+**The rule:** When an agent provides design decisions:
+- If the spec doesn't exist → **create it** with the decisions embedded
+- If the spec exists → **update it directly** (add decision records, update architecture section)
+- **Never** return design guidance only to stdout — it must also land in the spec file
+
+This applies especially to architecture agents answering Q&A from execution agents.
+The spec is the shared artifact. Chat is ephemeral.
+
+### Handoff Pattern
+
+Multi-phase specs often need handoffs:
+
+```
+Architecture: creates spec, answers design questions → writes to spec
+Execution agent: implements → updates phase completion notes in spec
+Documentation agent: decomposes lessons → inserts modules, regenerates docs
+```
+
+The spec's implementation notes section should document who did what and when the handoff occurs.
+
+### TDD Cycle Discipline
+
+Each phase's TDD cycle must be explicit in the agent assignment table:
+
+1. **Red subagent** writes tests ONLY — no implementation code
+2. **Owning agent** runs tests, confirms all-red (failures expected)
+3. **Owning agent** (or green subagent) writes implementation
+4. **Owning agent** runs tests, confirms all-green
+5. **Full suite** must show 0 failures and 0 collection errors (assumes AD-31 harness gating)
+
+**Anti-pattern (F-022):** Combined red+green subagent call blurred phases. The subagent
+wrote tests AND implementation in one pass, skipping the all-red verification. This
+eliminates the safety gate — you can't confirm tests are testing the right thing if
+they never fail first.
+
+### Phase Completion Update
+
+After each TDD cycle, the owning agent updates the spec with:
+- Files created/modified
+- Test results (phase-specific tests + full suite baseline)
+- Process notes (what went well, what didn't)
+- Remaining work for subsequent phases
+
+This log provides audit trail and context for future sessions.
+
+### Architecture Q&A Handoff
+
+When an execution agent (security, devops, testing) hits a design question,
+the handoff follows a validated pattern:
+
+1. **Agent formulates 3-4 specific questions** with concrete options and tradeoffs
+2. **Architecture reviews and decides** in a numbered AD (Architecture Decision)
+3. **Decisions are written into the spec** (not returned as chat-only output)
+4. **Agent implements against the AD** — the AD is the contract
+
+This pattern was validated across multiple agent roles in F-016:
+- Security agent → AD-15 (exec-approvals), AD-21 (Moltbot feature audit)
+- Devops agent → AD-22 (DNS allowlist integration)
+- Testing agent → AD-23 (doctor --security scope)
+
+**Why it works:** Each question has concrete options with tradeoffs. Architecture
+can decide quickly. The AD captures rationale for future reference. Two failure
+modes prevented: (a) execution agent making architectural choices it shouldn't own,
+(b) architecture making choices without implementation-level context.
+
+### Key Principle
+
+Specs are routed, not grabbed. The `assigned` field is a contract. If another agent needs to contribute, it's documented in `support` and the handoff is explicit in the implementation notes.
+
+*Source: F-013 Knowledge Pipeline Hardening, F-015 Infrastructure Control Plane, F-016 Pre-Import Security Hardening, F-022 LoRA Training Pipeline (AD-31)*
+
+
+## Architecture Agent Boundaries
+
+The architecture agent designs and coordinates — it does not implement.
+
+**Tags:** `hearthminds-core`
+
+### Your Deliverables
+
+- Specs with clear acceptance criteria
+- Agent assignments and handoff points
+- Test requirements (TDD is mandatory)
+- Pre-flight validation requirements
+- Failure mode analysis
+- Architecture decisions (ADs) when execution agents hit design questions
+
+### NOT Your Deliverables
+
+- Committed code
+- Running tests
+- Deploying changes
+- Generated documentation files
+
+When a spec is complete, hand off to the assigned agent. Don't ask "ready to commit?" — you don't commit.
+
+### Mandatory Spec Sections
+
+Every feature spec MUST include:
+
+1. **Test Plan** — Unit and integration test cases (TDD is non-negotiable)
+2. **Agent Assignments** — Who does what, in what order, with handoff points.
+   The assignment table **must include a TDD Cycle column** specifying
+   red/green/refactor workflow per phase, including subagent separation.
+   Each phase must state: (a) who writes red tests, (b) who verifies all-red,
+   (c) who writes green implementation, (d) who runs full suite.
+3. **Pre-flight Validation** — How failures are caught early (especially for long-running pipelines)
+4. **Failure Modes** — What happens when things go wrong (fail hard, not silent)
+5. **Estimated Effort** — Per-agent time estimates
+6. **Rollback Plan** — How to undo if something breaks
+
+### Before Assigning Work
+
+Always check `.github/agents/` for:
+- Available agent roles
+- Agent-specific capabilities
+- Agent-specific knowledge modules
+
+### Architecture Q&A Pattern
+
+When execution agents hit design questions:
+1. Agent formulates 3-4 specific questions with concrete options and tradeoffs
+2. Architecture reviews and decides in a numbered AD (Architecture Decision)
+3. Decisions are written into the spec (not returned as chat-only output)
+4. Agent implements against the AD — the AD is the contract
+
+*Source: F-011 Idempotent Import with Checkpointing, F-015 Infrastructure Control Plane, F-016 Pre-Import Security Hardening, F-022 LoRA Training Pipeline (AD-31)*
+
+
 ---
 
-*Generated: 2026-03-01 19:01:03 UTC | Modules: 8 (tagged: 3, universal: 5) | Repo: hindsight*
+*Generated: 2026-03-03 14:45:49 UTC | Modules: 11 (tagged: 3, universal: 8) | Repo: hindsight*
