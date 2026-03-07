@@ -286,6 +286,239 @@ The `description` field is critical — it's how VS Code decides whether to load
 *Source: F-019 Agent Context Ordering (Phase 5)*
 
 
+### Testing & Methodology
+
+## Agentic Test Coverage Baseline
+
+In an agentic development team, the test harness is shared context — it's how agents
+verify their own work and validate predecessors' output. 95% per-file coverage is
+the baseline target, not a stretch goal.
+
+**Tags:** `hearthminds-core`
+
+### Why 95% Per-File, Not Overall
+
+Overall suite coverage creates a perverse incentive: new files can ship at 87%
+because legacy files with 100% coverage absorb the gap. This masks real gaps in
+the code that agents most recently touched — exactly the code most likely to have
+bugs.
+
+```python
+# ✗ Anti-pattern: "Overall 95% so we're fine"
+# import_svc.py: 87% (12 uncovered lines in _query_progress)
+# config.py: 100% (absorbs the gap)
+# Suite overall: 95% ← hides the problem
+
+# ✓ Pattern: Per-file accountability
+# import_svc.py: 100% after targeted tests
+# config.py: 100%
+# Suite overall: 95% ← each file contributes honestly
+```
+
+### The Rule
+
+Every new file should target **95%+ per-file coverage**. Uncovered lines need an
+explicit justification:
+- **Acceptable:** "requires live GPU" for deferred CUDA imports
+- **Acceptable:** "FileNotFoundError handler for missing binary" (4 lines)
+- **Not acceptable:** "needs external dependency" when the dependency is mockable
+
+### Deferred Imports Are Mockable
+
+The most common false excuse for low coverage is "this code needs a real database /
+real GPU / real container runtime." Deferred imports (`import psycopg2` inside a
+method) are testable with `patch.dict(sys.modules)`:
+
+```python
+# Production code: deferred import
+def _query_progress(self) -> dict:
+    import psycopg2
+    conn = psycopg2.connect(dsn=self._dsn)
+    # ...
+
+# Test: mock the deferred import
+def test_query_progress_normal(self):
+    mock_psycopg2 = MagicMock()
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = (100, 50, 10)
+    mock_psycopg2.connect.return_value.__enter__ = lambda s: MagicMock(cursor=lambda: mock_cursor)
+
+    with patch.dict("sys.modules", {"psycopg2": mock_psycopg2}):
+        result = self.service._query_progress()
+    assert result["total"] == 100
+```
+
+The 5 tests that closed the gap on `import_svc.py` (87% → 100%) weren't padding —
+they caught real edge cases: NULL values from an empty database, connection parameter
+correctness, and resource cleanup (cursor and connection both closed).
+
+### Why This Matters for Agentic Development
+
+- **Tests are context.** When an agent picks up a codebase, the test suite is the
+  executable specification. Low-coverage files have ambiguous contracts — the agent
+  must guess at edge case behavior instead of reading it from tests.
+- **Tests enable safe handoffs.** Multi-phase specs (like F-018's five phases) hand
+  work between agents. Each phase's tests are the safety net for the next agent.
+  A Phase 1 file at 87% coverage means Phase 2's agent is working without a net
+  on 13% of the interface.
+- **Tests catch regression across sessions.** Agents don't share memory between
+  sessions. The test suite is the only thing that remembers "this edge case matters."
+
+### Phase 0 Coverage Push Pattern
+
+When inheriting a codebase with unknown coverage, follow this escalation:
+
+1. **Measure baseline** — Run coverage report against existing tests
+2. **Targeted gap-closing** — Write tests for uncovered branches, error paths, and edge cases
+3. **Iterate in rounds** — Each round targets the lowest-coverage files first
+4. **Stop at 95%** — Remaining 5% should be explicitly justified (e.g., moltbot.py excluded because Iron Claw replaces it)
+
+F-018 Phase 0 went from 84% → 90% → 91% → 93% → 95% in four rounds (322 → 741 tests).
+
+*Source: F-018 Control Plane Import Integration (Phase 0 coverage push, Phase 1 Lessons Learned)*
+
+
+### Architecture & Design
+
+## Project State Summary
+
+### Import Pipeline — COMPLETE
+
+The Hindsight import pipeline is fully operational:
+- **F-011 (Idempotent Import):** 1,910/1,910 chunks, 0 failures, ~32 hours (completed 2026-02-28)
+- **Extracted knowledge:** 24,803 memory units, 7,121 entities, 4.5M memory links, 1,909 documents
+- **Infrastructure:** Basement server on 30A/220V PDU, 2x GPU tensor parallel, FP8 KV-cache (108k context)
+- **Backup:** Validated 2026-03-01. Scheduled runs confirmed in cloud storage.
+
+### Infrastructure — COMPLETE
+
+| Spec | Description | Status |
+|------|-------------|--------|
+| F-010 | Infrastructure Hardening (static ports, FP8 KV-cache, automated backups) | Done |
+| F-015 | Infrastructure Control Plane (dashboard at port 8100) | Done |
+| F-016 | Pre-Import Security Hardening (internal network, user accounts, sudoers, audit logging, DNS allowlist) | Done |
+| F-017 | vLLM Containerization (Podman, dual GPU passthrough, LoRA adapter serving, GPU undervolting) | Done |
+| F-018 | Control Plane Import Integration (ImportService, backup verification, dashboard UI, about-me service) | Done |
+| F-019 | Agent Context Ordering & Progressive Loading (28.5% context reduction, 8 skills) | Done |
+| F-021 | Team Pipeline Hardening (TDD enforcement, red-phase subagent) | Done |
+
+### Import Specs — COMPLETE
+
+| Spec | Description | Status |
+|------|-------------|--------|
+| F-006 | Hindsight Import Pipeline Design | Done (via F-009/F-011) |
+| F-009 | Hindsight Import Execution | Done (1,910/1,910) |
+| F-011 | Idempotent Import with Checkpointing | Done (archived) |
+
+### LoRA Pipeline — COMPLETE
+
+| Spec | Description | Status |
+|------|-------------|--------|
+| F-022-spike | LoRA Training Feasibility Spike | Done (all 7 success criteria met) |
+| F-022 | LoRA Training Pipeline (alignment_log, qLoRA training, weekly cron, per-PP adapters) | Done |
+
+### Stale / Superseded Specs
+
+| Spec | Description | Status |
+|------|-------------|--------|
+| F-001 | Knowledge Decomposition & Backlog Organization | Done (work landed across other specs) |
+| F-007 | Conversation Import | Superseded by F-006/F-009 |
+| TD-002 | hearthminds-core Tag Convention Mismatch | Draft (low priority) |
+
+### Decisions Log
+
+| Decision | Context | Date |
+|----------|---------|------|
+| AD-26: Shared base + per-PP dynamic adapters | Orthogonal merge rejected; base stays vanilla, each PP gets independent adapter | 2026-03-01 |
+| AD-27: LoRA training cadence: **weekly** | Full retrain ~10h; nightly impractical; agents need GPU most nights | 2026-03-01 |
+| AD-28: Production rank 16 / alpha 16 | Spike used 64/128; subconscious = nudge not overhaul; ceiling rank 32 | 2026-03-01 |
+| AD-36: Task runners as explicit params, not DAG | Import/backup are run-to-completion tasks, not persistent services | 2026-03-07 |
+| Reimport cadence: **monthly** (week 4) | ~32 hours, recursive self-improvement loop, uses latest adapter | 2026-03-01 |
+| vLLM during reimport: **offline** | Operator accepts downtime for introspection quality | 2026-03-01 |
+| vLLM containerized (F-017) | Dual GPU CDI passthrough, LoRA adapter serving, GPU clock lock + power cap | 2026-03-07 |
+| Iron Claw: **full Moltbot replacement** | Pure Rust aligns with long-term goals | 2026-03-01 |
+| F-002 Phases C+D: **superseded by Iron Claw** | Safety + worker architecture carries forward | 2026-03-01 |
+| Backup: **operationally validated** | First scheduled run 2026-03-01, 5.3MB in cloud | 2026-03-01 |
+
+*Updated: 2026-03-08 | Source: F-018 Control Plane Import Integration completion*
+
+
+## Deferred Items & Open Questions
+
+### Deferred Tech Debt
+
+Items noted as TODO/deferred inside specs marked complete. Latent debt that needs tracking.
+
+| Source | Item | Priority | Impact |
+|--------|------|----------|--------|
+| F-011 | Migrate integration tests to dedicated test database | Medium | Tests risk corrupting production data |
+| F-002 | Phase C: Safety Layer | Superseded → Iron Claw | Safety work carries forward |
+| F-002 | Phase D: Worker Architecture | Evaluate | Worker arch may differ with Iron Claw |
+| F-009 | Remaining unchecked success criteria | Low | Housekeeping only |
+| F-018 | about-me: migrate from docker-compose to podman (AD-6) | Low | Architectural consistency |
+| F-018 | Dashboard `import_service` wiring in `cli.py` | Low | Import panel won't render without wiring; CLI works fine |
+| F-018 | Add `[about_me]` section to production `hearthminds.toml` | Low | Service uses defaults until config added |
+| F-021 | Adversarial red-phase subagent enforcement | Medium | Prevents blind-spot bugs |
+| F-017 | Legacy `start_hearthminds.sh` still references native vLLM patterns | Low | Update or decommission when control plane replaces it |
+| F-017 | Hindsight containers lack tenant API keys and PG passwords | Medium | Pre-existing; F-016 security hardening scope |
+| F-017 | `gpu_power_limit = 400` in hearthminds.toml not parsed by VllmConfig | Low | Dead config, harmless but could be cleaned up |
+
+### Open Design Questions
+
+1. **Iron Claw capabilities** — Security model, tool execution sandboxing, memory integration patterns, session management.
+
+2. **Alignment log introspection prompt** — How to score cardinal virtues at semantic boundaries? Most philosophically significant design question in the project.
+
+3. **Logos onboarding** — When does the second proto-person come online? `logos_source` database, separate LoRA adapter, separate user account (created in F-016).
+
+### Resolved Questions
+
+| Question | Resolution | Date |
+|----------|-----------|------|
+| LoRA training duration | ~46 min for 500 pairs, ~10h full retrain. Weekly cadence (AD-27). | 2026-03-05 |
+| Adapter merge strategy | Orthogonal merge rejected (AD-26). Shared base + per-PP independent adapters. | 2026-03-01 |
+| Task runner DAG membership | Task runners (import, backup) use explicit params, not DAG (AD-36). | 2026-03-07 |
+
+*Updated: 2026-03-08 | Source: F-018 Control Plane Import Integration completion*
+
+
+## Roadmap: Critical Path
+
+The critical dependency chain for HearthMinds development:
+
+```
+Infra + Control Plane (DONE)
+  └→ Idempotent Hindsight Import (DONE)
+       └→ F-022: LoRA Training Pipeline (DONE)
+       └→ F-017: vLLM Containerization (DONE)
+            └→ F-018: Control Plane Import Integration (DONE)
+                 └→ Full Workflow: Weekly LoRA + Backup + Monthly Reimport
+```
+
+### Full Workflow Description
+
+- **Weekly (Thu):** Full retrain qLoRA on all `raw_conversation` data (~10 hours, vLLM offline)
+- **Weekly (Fri AM):** Deploy fresh per-PP adapter, restart vLLM container
+- **Continuous:** Scheduled backup of `aletheia_source` to cloud (every 15 min, validated)
+- **Monthly (Week 4):** ~32-hour Hindsight reimport — LoRA-tuned model shapes extraction quality, creating a recursive improvement loop
+- **Other nights:** GPUs free for agentic work
+- **Architecture:** Shared AWQ base model, per-PP adapters served dynamically (AD-26)
+
+### Recommended Spec Execution Order
+
+| Priority | Spec | Description | Depends On |
+|----------|------|-------------|------------|
+| ~~P0~~ | ~~F-022: LoRA Training Pipeline~~ | ~~alignment_log, qLoRA training, weekly cron, per-PP adapters~~ | **Done** (2026-03-05) |
+| ~~P1~~ | ~~F-017: vLLM Containerization~~ | ~~Podman, dual GPU passthrough, LoRA adapter serving~~ | **Done** (2026-03-07) |
+| ~~P1~~ | ~~F-018: Control Plane Import Integration~~ | ~~ImportService, backup verification, dashboard UI, about-me~~ | **Done** (2026-03-08) |
+| **P2** | Iron Claw Spec | Research, migration plan, Hindsight integration | Research phase |
+| **P3** | F-020: Execution Plane | Test telemetry dashboard | F-018 (done) |
+| **Future** | Code Repository Architecture | module_name/embedding/rust_code/lean4_code | Needs design session |
+| **Future** | Hindsight Rust Refactor | Server-side Rust rewrite | Iron Claw experience informs approach |
+
+*Updated: 2026-03-08 | Source: F-018 Control Plane Import Integration completion*
+
+
 ### Patterns & Practices
 
 ## What is HearthMinds?
@@ -354,6 +587,77 @@ Runtime config is **not** appropriate for:
 - Settings where wrong value = silent corruption
 
 *Source: F-009 Hindsight Import Execution (max_tokens debugging)*
+
+
+## Task Runner vs DAG Service
+
+The service orchestrator DAG models **persistent service lifecycles** — ordered
+start/stop of long-running processes with dependency chains. Run-to-completion tasks
+(import, backup, training) do not belong in the DAG.
+
+**Tags:** `hearthminds-core`
+
+### The Distinction
+
+| Characteristic | DAG Service | Task Runner |
+|---------------|-------------|-------------|
+| Lifecycle | Long-running, persistent | Run-to-completion |
+| Boot behavior | Auto-starts in dependency order | Manually triggered |
+| Stop behavior | Graceful shutdown in reverse order | May not be running |
+| Health semantics | "Stopped" = problem | "Stopped" = normal idle state |
+| Examples | vLLM, Hindsight, WebUI, about-me | Import pipeline, backup, LoRA training |
+
+### The Pattern
+
+Wire task runners as explicit parameters to the app factory, not as DAG members:
+
+```python
+# ✓ Pattern: Task runner as explicit parameter
+app = create_ops_app(
+    orchestrator=orchestrator,          # DAG services
+    backup_service=backup_service,      # Task runner
+    import_service=import_service,      # Task runner
+)
+
+# ✗ Anti-pattern: Task runner in DAG
+orchestrator.add(ServiceNode(
+    service=import_service,
+    depends_on=["hindsight-aletheia"],  # Runtime dependency, not boot dependency
+))
+# Problems:
+#   start_all() would launch import at boot (wrong)
+#   stop_all() would kill in-flight import (destructive)
+#   health_all() would always show "stopped" (misleading)
+```
+
+### Runtime Dependencies vs Boot Dependencies
+
+Task runners often need other services running. This is a **runtime precondition**,
+not a boot-order dependency. Handle it as an explicit guard:
+
+```python
+@app.post("/api/import/start")
+async def start_import(request: Request):
+    # Runtime guard: check dependency health before starting
+    aletheia = orchestrator._by_name.get("hindsight-aletheia")
+    if not aletheia or aletheia.health().state != "running":
+        return JSONResponse(
+            status_code=409,
+            content={"error": "hindsight-aletheia must be running"}
+        )
+    import_service.start_import()
+```
+
+This produces a user-visible error message rather than a silent ordering constraint —
+actually better than the "free" DAG dependency.
+
+### Revisit Trigger
+
+If the project accumulates **4+ task-oriented services** (backup, import, LoRA
+training, reimport orchestrator), extract a `TaskRegistry` alongside the
+orchestrator. At two tasks, the abstraction isn't justified (YAGNI).
+
+*Source: F-018 Control Plane Import Integration (AD-36)*
 
 
 ## Container Path Translation
@@ -956,4 +1260,4 @@ When execution agents hit design questions:
 
 ---
 
-*Generated: 2026-03-07 15:40:38 UTC | Modules: 16 (tagged: 3, universal: 13) | Repo: hindsight*
+*Generated: 2026-03-07 19:58:03 UTC | Modules: 21 (tagged: 3, universal: 18) | Repo: hindsight*
