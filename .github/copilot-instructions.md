@@ -356,6 +356,59 @@ Runtime config is **not** appropriate for:
 *Source: F-009 Hindsight Import Execution (max_tokens debugging)*
 
 
+## Container Path Translation
+
+When services use filesystem paths as identifiers, those paths must be translated for container context. Host paths and container paths differ when directories are bind-mounted.
+
+**Tags:** `hearthminds-core`
+
+### The Problem
+
+Some services derive identifiers from filesystem paths. When the service runs in a container with bind-mounted directories, the paths — and therefore the identifiers — change.
+
+**Example: vLLM model ID.** vLLM uses the `--model` argument as the model ID in its `/v1/models` endpoint:
+- Host: `--model ~/models/llama-3.3-70b-instruct-awq` → model ID includes the host path
+- Container: `--model /models/llama-3.3-70b-instruct-awq` → model ID: `/models/llama-3.3-70b-instruct-awq`
+
+Clients using the host path as model ID get "model not found" from the containerized service.
+
+**Example: LoRA adapter paths.** vLLM's `--lora-modules` takes `name=path` pairs. The path must be valid inside the container, not on the host.
+
+### The Pattern
+
+When constructing paths for containerized services, translate host paths to container mount paths:
+
+```python
+# ✗ Anti-pattern: Using host paths inside container
+container_model_id = host_model_path  # /home/user/models/foo
+adapter_path = host_adapter_path      # /home/user/models/adapters/bar
+
+# ✓ Pattern: Translate to container paths
+container_model_id = f"/models/{host_model_path.name}"
+container_adapter_path = Path("/models") / host_adapter_path.relative_to(host_model_dir)
+```
+
+### Client-Side Impact
+
+Clients (like Hindsight) must use the **container** model ID, not the host path:
+
+```python
+# When vLLM is containerized:
+model_name = f"/models/{model_path.name}"  # /models/llama-3.3-70b-instruct-awq
+
+# When vLLM is native:
+model_name = str(model_path)  # /home/user/models/llama-3.3-70b-instruct-awq
+```
+
+### When to Apply
+
+- Any service where filesystem paths become API identifiers
+- Bind-mounted model directories, adapter directories, config paths
+- Multi-mode services (container vs native) that need path branching
+
+*Source: F-017 vLLM Containerization (Cutover Bugs #1, #3, #4)*
+
+
 ## Deferred GPU Import Pattern
 
 When writing Python scripts that use GPU-dependent packages (PEFT, TRL, torch, gptqmodel, transformers), defer imports inside the function that needs them rather than at module level.
@@ -425,6 +478,54 @@ def preflight_check(data_path: str, output_dir: str) -> None:
 ```
 
 *Source: F-022 LoRA Training Pipeline (Phase 3)*
+
+
+## Dual-Access Container Networking
+
+Containerized services with port publishing are reachable via two paths simultaneously: container DNS (from sibling containers) and localhost (from host processes).
+
+**Tags:** `hearthminds-core`
+
+### The Pattern
+
+When a container is created with both `--network` and `--publish`:
+
+```bash
+podman run -d --name vllm \
+  --network hearthminds-internal \
+  --publish 8000:8000 \
+  vllm/vllm-openai:latest ...
+```
+
+Two access paths exist:
+1. **Container DNS** (`http://vllm:8000/v1`) — for sibling containers on the same Podman network
+2. **Localhost** (`http://localhost:8000/v1`) — for host processes not on the container network
+
+### When to Use Which
+
+| Caller | URL | Why |
+|--------|-----|-----|
+| Hindsight containers (same network) | `http://vllm:8000/v1` | Container DNS, no host gateway needed |
+| OpenWebUI (host network) | `http://localhost:8000/v1` | Port publish, host process |
+| Moltbot (host process) | `http://localhost:8000/v1` | Same as OpenWebUI |
+| hearthminds_ctl dashboard | `http://localhost:8000` | Health probes from host |
+
+### Code Pattern
+
+Branch the URL based on whether the caller is containerized on the same network:
+
+```python
+if vllm_is_containerized:
+    vllm_url = f"http://vllm:{port}/v1"       # Podman DNS
+else:
+    vllm_url = f"http://localhost:{port}/v1"   # Native process
+```
+
+### Why Not Always Use localhost?
+
+Containers on an `--internal` network (no internet egress) may not have a route to the host's `localhost`. Container DNS is the correct and reliable path for inter-container communication.
+
+*Source: F-017 vLLM Containerization (Cutover Bug #3, Phase 3 topology)*
 
 
 ## Multi-Venv Pipeline Orchestration
@@ -497,6 +598,52 @@ export TRAINED_IDS="id1,id2,id3,..."  # Breaks at scale
 ```
 
 *Source: F-022 LoRA Training Pipeline (Phase 5, AD-34, AD-35)*
+
+
+## Relative Symlinks for Bind Mounts
+
+Absolute symlinks break when bind-mounted into containers. Always use relative symlinks for files that will be bind-mounted.
+
+**Tags:** `hearthminds-core`
+
+### The Problem
+
+When a directory is bind-mounted into a container (e.g., `~/models:/models:ro`), symbolic links within that directory are followed by the container's filesystem. An **absolute** symlink points to the host path, which doesn't exist inside the container.
+
+```bash
+# ✗ Anti-pattern: Absolute symlink
+ln -s /home/chapinad/models/adapters/aletheia-20260305 aletheia-latest
+# Inside container: /models/adapters/aletheia-latest → /home/chapinad/models/adapters/aletheia-20260305
+# FAILS: /home/chapinad doesn't exist in the container
+```
+
+### The Pattern
+
+Use relative symlinks so the target is resolved relative to the symlink's location, which works regardless of the mount point.
+
+```bash
+# ✓ Pattern: Relative symlink
+cd ~/models/adapters
+ln -s aletheia-20260305 aletheia-latest
+# Inside container: /models/adapters/aletheia-latest → aletheia-20260305
+# WORKS: resolves to /models/adapters/aletheia-20260305
+```
+
+### When to Apply
+
+- Any file or directory that will be bind-mounted into a container
+- Adapter directories, model checkpoints, config symlinks
+- Anywhere `ls -la` shows an absolute path in a bind-mounted tree
+
+### Verification
+
+```bash
+# Check for absolute symlinks in a directory
+find ~/models -type l -lname '/*'
+# If any results show, fix them to use relative targets
+```
+
+*Source: F-017 vLLM Containerization (Cutover Bug #2)*
 
 
 ## PostgreSQL Migration Testing Patterns
@@ -809,4 +956,4 @@ When execution agents hit design questions:
 
 ---
 
-*Generated: 2026-03-05 23:11:54 UTC | Modules: 13 (tagged: 3, universal: 10) | Repo: hindsight*
+*Generated: 2026-03-07 15:40:38 UTC | Modules: 16 (tagged: 3, universal: 13) | Repo: hindsight*
