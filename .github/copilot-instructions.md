@@ -145,6 +145,63 @@ npm install
 
 ### Workflow & Governance
 
+## Architecture Agent Boundaries
+
+The architecture agent designs and coordinates — it does not implement.
+
+**Tags:** `hearthminds-core`
+
+### Your Deliverables
+
+- Specs with clear acceptance criteria
+- Agent assignments and handoff points
+- Test requirements (TDD is mandatory)
+- Pre-flight validation requirements
+- Failure mode analysis
+- Architecture decisions (ADs) when execution agents hit design questions
+
+### NOT Your Deliverables
+
+- Committed code
+- Running tests
+- Deploying changes
+- Generated documentation files
+
+When a spec is complete, hand off to the assigned agent. Don't ask "ready to commit?" — you don't commit.
+
+### Mandatory Spec Sections
+
+Every feature spec MUST include:
+
+1. **Test Plan** — Unit and integration test cases (TDD is non-negotiable)
+2. **Agent Assignments** — Who does what, in what order, with handoff points.
+   The assignment table **must include a TDD Cycle column** specifying
+   red/green/refactor workflow per phase, including subagent separation.
+   Each phase must state: (a) who writes red tests, (b) who verifies all-red,
+   (c) who writes green implementation, (d) who runs full suite.
+3. **Pre-flight Validation** — How failures are caught early (especially for long-running pipelines)
+4. **Failure Modes** — What happens when things go wrong (fail hard, not silent)
+5. **Estimated Effort** — Per-agent time estimates
+6. **Rollback Plan** — How to undo if something breaks
+
+### Before Assigning Work
+
+Always check `.github/agents/` for:
+- Available agent roles
+- Agent-specific capabilities
+- Agent-specific knowledge modules
+
+### Architecture Q&A Pattern
+
+When execution agents hit design questions:
+1. Agent formulates 3-4 specific questions with concrete options and tradeoffs
+2. Architecture reviews and decides in a numbered AD (Architecture Decision)
+3. Decisions are written into the spec (not returned as chat-only output)
+4. Agent implements against the AD — the AD is the contract
+
+*Source: F-011 Idempotent Import with Checkpointing, F-015 Infrastructure Control Plane, F-016 Pre-Import Security Hardening, F-022 LoRA Training Pipeline (AD-31)*
+
+
 ## Spec Workflow Routing
 
 Every spec must declare an execution path through the team: who builds, who supports, and where handoffs occur.
@@ -173,6 +230,7 @@ flowchart LR
 - **Architecture** does NOT write code or run tests — only specs, ADs, and assignments
 - **Expert agents** MUST use the red-phase-test subagent for test authoring — no self-authored tests
 - **Documentation agent** is the sole committer of generated output across all repos
+- **Strict agent assignment adherence** — agents operate only within their `assigned` scope. File categories in the Routing Rules table define ownership boundaries. Cross-boundary work requires explicit `support` designation in the spec frontmatter
 
 ### Required Frontmatter
 
@@ -268,64 +326,7 @@ After each TDD cycle, the owning agent updates the spec with:
 
 Specs are routed, not grabbed. The `assigned` field is a contract. If another agent needs to contribute, it's documented in `support` and the handoff is explicit in the implementation notes.
 
-*Source: F-013 Knowledge Pipeline Hardening, F-015 Infrastructure Control Plane, F-016 Pre-Import Security Hardening, F-020 Execution Plane, F-022 LoRA Training Pipeline (AD-31)*
-
-
-## Architecture Agent Boundaries
-
-The architecture agent designs and coordinates — it does not implement.
-
-**Tags:** `hearthminds-core`
-
-### Your Deliverables
-
-- Specs with clear acceptance criteria
-- Agent assignments and handoff points
-- Test requirements (TDD is mandatory)
-- Pre-flight validation requirements
-- Failure mode analysis
-- Architecture decisions (ADs) when execution agents hit design questions
-
-### NOT Your Deliverables
-
-- Committed code
-- Running tests
-- Deploying changes
-- Generated documentation files
-
-When a spec is complete, hand off to the assigned agent. Don't ask "ready to commit?" — you don't commit.
-
-### Mandatory Spec Sections
-
-Every feature spec MUST include:
-
-1. **Test Plan** — Unit and integration test cases (TDD is non-negotiable)
-2. **Agent Assignments** — Who does what, in what order, with handoff points.
-   The assignment table **must include a TDD Cycle column** specifying
-   red/green/refactor workflow per phase, including subagent separation.
-   Each phase must state: (a) who writes red tests, (b) who verifies all-red,
-   (c) who writes green implementation, (d) who runs full suite.
-3. **Pre-flight Validation** — How failures are caught early (especially for long-running pipelines)
-4. **Failure Modes** — What happens when things go wrong (fail hard, not silent)
-5. **Estimated Effort** — Per-agent time estimates
-6. **Rollback Plan** — How to undo if something breaks
-
-### Before Assigning Work
-
-Always check `.github/agents/` for:
-- Available agent roles
-- Agent-specific capabilities
-- Agent-specific knowledge modules
-
-### Architecture Q&A Pattern
-
-When execution agents hit design questions:
-1. Agent formulates 3-4 specific questions with concrete options and tradeoffs
-2. Architecture reviews and decides in a numbered AD (Architecture Decision)
-3. Decisions are written into the spec (not returned as chat-only output)
-4. Agent implements against the AD — the AD is the contract
-
-*Source: F-011 Idempotent Import with Checkpointing, F-015 Infrastructure Control Plane, F-016 Pre-Import Security Hardening, F-022 LoRA Training Pipeline (AD-31)*
+*Source: F-013 Knowledge Pipeline Hardening, F-015 Infrastructure Control Plane, F-016 Pre-Import Security Hardening, F-020 Execution Plane, F-022 LoRA Training Pipeline (AD-31), F-023 Conversation Capture Pipeline (Phase 4)*
 
 
 ### Conventions
@@ -471,162 +472,7 @@ The `description` field is critical — it's how VS Code decides whether to load
 *Source: F-019 Agent Context Ordering (Phase 5)*
 
 
-### Testing & Methodology
-
-## Agentic Test Coverage Baseline
-
-In an agentic development team, the test harness is shared context — it's how agents
-verify their own work and validate predecessors' output. 95% per-file coverage is
-the baseline target, not a stretch goal.
-
-**Tags:** `hearthminds-core`
-
-### Why 95% Per-File, Not Overall
-
-Overall suite coverage creates a perverse incentive: new files can ship at 87%
-because legacy files with 100% coverage absorb the gap. This masks real gaps in
-the code that agents most recently touched — exactly the code most likely to have
-bugs.
-
-```python
-# ✗ Anti-pattern: "Overall 95% so we're fine"
-# import_svc.py: 87% (12 uncovered lines in _query_progress)
-# config.py: 100% (absorbs the gap)
-# Suite overall: 95% ← hides the problem
-
-# ✓ Pattern: Per-file accountability
-# import_svc.py: 100% after targeted tests
-# config.py: 100%
-# Suite overall: 95% ← each file contributes honestly
-```
-
-### The Rule
-
-Every new file should target **95%+ per-file coverage**. Uncovered lines need an
-explicit justification:
-- **Acceptable:** "requires live GPU" for deferred CUDA imports
-- **Acceptable:** "FileNotFoundError handler for missing binary" (4 lines)
-- **Not acceptable:** "needs external dependency" when the dependency is mockable
-
-### Deferred Imports Are Mockable
-
-The most common false excuse for low coverage is "this code needs a real database /
-real GPU / real container runtime." Deferred imports (`import psycopg2` inside a
-method) are testable with `patch.dict(sys.modules)`:
-
-```python
-# Production code: deferred import
-def _query_progress(self) -> dict:
-    import psycopg2
-    conn = psycopg2.connect(dsn=self._dsn)
-    # ...
-
-# Test: mock the deferred import
-def test_query_progress_normal(self):
-    mock_psycopg2 = MagicMock()
-    mock_cursor = MagicMock()
-    mock_cursor.fetchone.return_value = (100, 50, 10)
-    mock_psycopg2.connect.return_value.__enter__ = lambda s: MagicMock(cursor=lambda: mock_cursor)
-
-    with patch.dict("sys.modules", {"psycopg2": mock_psycopg2}):
-        result = self.service._query_progress()
-    assert result["total"] == 100
-```
-
-The 5 tests that closed the gap on `import_svc.py` (87% → 100%) weren't padding —
-they caught real edge cases: NULL values from an empty database, connection parameter
-correctness, and resource cleanup (cursor and connection both closed).
-
-### Why This Matters for Agentic Development
-
-- **Tests are context.** When an agent picks up a codebase, the test suite is the
-  executable specification. Low-coverage files have ambiguous contracts — the agent
-  must guess at edge case behavior instead of reading it from tests.
-- **Tests enable safe handoffs.** Multi-phase specs (like F-018's five phases) hand
-  work between agents. Each phase's tests are the safety net for the next agent.
-  A Phase 1 file at 87% coverage means Phase 2's agent is working without a net
-  on 13% of the interface.
-- **Tests catch regression across sessions.** Agents don't share memory between
-  sessions. The test suite is the only thing that remembers "this edge case matters."
-
-### Phase 0 Coverage Push Pattern
-
-When inheriting a codebase with unknown coverage, follow this escalation:
-
-1. **Measure baseline** — Run coverage report against existing tests
-2. **Targeted gap-closing** — Write tests for uncovered branches, error paths, and edge cases
-3. **Iterate in rounds** — Each round targets the lowest-coverage files first
-4. **Stop at 95%** — Remaining 5% should be explicitly justified (e.g., moltbot.py excluded because Iron Claw replaces it)
-
-F-018 Phase 0 went from 84% → 90% → 91% → 93% → 95% in four rounds (322 → 741 tests).
-
-*Source: F-018 Control Plane Import Integration (Phase 0 coverage push, Phase 1 Lessons Learned)*
-
-
 ### Architecture & Design
-
-## Project State Summary
-
-### Import Pipeline — COMPLETE
-
-The Hindsight import pipeline is fully operational:
-- **F-011 (Idempotent Import):** 1,910/1,910 chunks, 0 failures, ~32 hours (completed 2026-02-28)
-- **Extracted knowledge:** 24,803 memory units, 7,121 entities, 4.5M memory links, 1,909 documents
-- **Infrastructure:** Basement server on 30A/220V PDU, 2x GPU tensor parallel, FP8 KV-cache (108k context)
-- **Backup:** Validated 2026-03-01. Scheduled runs confirmed in cloud storage.
-
-### Infrastructure — COMPLETE
-
-| Spec | Description | Status |
-|------|-------------|--------|
-| F-010 | Infrastructure Hardening (static ports, FP8 KV-cache, automated backups) | Done |
-| F-015 | Infrastructure Control Plane (dashboard at port 8100) | Done |
-| F-016 | Pre-Import Security Hardening (internal network, user accounts, sudoers, audit logging, DNS allowlist) | Done |
-| F-017 | vLLM Containerization (Podman, dual GPU passthrough, LoRA adapter serving, GPU undervolting) | Done |
-| F-018 | Control Plane Import Integration (ImportService, backup verification, dashboard UI, about-me service) | Done |
-| F-019 | Agent Context Ordering & Progressive Loading (28.5% context reduction, 8 skills) | Done |
-| F-021 | Team Pipeline Hardening (TDD enforcement, red-phase subagent) | Done |
-
-### Import Specs — COMPLETE
-
-| Spec | Description | Status |
-|------|-------------|--------|
-| F-006 | Hindsight Import Pipeline Design | Done (via F-009/F-011) |
-| F-009 | Hindsight Import Execution | Done (1,910/1,910) |
-| F-011 | Idempotent Import with Checkpointing | Done (archived) |
-
-### LoRA Pipeline — COMPLETE
-
-| Spec | Description | Status |
-|------|-------------|--------|
-| F-022-spike | LoRA Training Feasibility Spike | Done (all 7 success criteria met) |
-| F-022 | LoRA Training Pipeline (alignment_log, qLoRA training, weekly cron, per-PP adapters) | Done |
-
-### Stale / Superseded Specs
-
-| Spec | Description | Status |
-|------|-------------|--------|
-| F-001 | Knowledge Decomposition & Backlog Organization | Done (work landed across other specs) |
-| F-007 | Conversation Import | Superseded by F-006/F-009 |
-| TD-002 | hearthminds-core Tag Convention Mismatch | Draft (low priority) |
-
-### Decisions Log
-
-| Decision | Context | Date |
-|----------|---------|------|
-| AD-26: Shared base + per-PP dynamic adapters | Orthogonal merge rejected; base stays vanilla, each PP gets independent adapter | 2026-03-01 |
-| AD-27: LoRA training cadence: **weekly** | Full retrain ~10h; nightly impractical; agents need GPU most nights | 2026-03-01 |
-| AD-28: Production rank 16 / alpha 16 | Spike used 64/128; subconscious = nudge not overhaul; ceiling rank 32 | 2026-03-01 |
-| AD-36: Task runners as explicit params, not DAG | Import/backup are run-to-completion tasks, not persistent services | 2026-03-07 |
-| Reimport cadence: **monthly** (week 4) | ~32 hours, recursive self-improvement loop, uses latest adapter | 2026-03-01 |
-| vLLM during reimport: **offline** | Operator accepts downtime for introspection quality | 2026-03-01 |
-| vLLM containerized (F-017) | Dual GPU CDI passthrough, LoRA adapter serving, GPU clock lock + power cap | 2026-03-07 |
-| Iron Claw: **full Moltbot replacement** | Pure Rust aligns with long-term goals | 2026-03-01 |
-| F-002 Phases C+D: **superseded by Iron Claw** | Safety + worker architecture carries forward | 2026-03-01 |
-| Backup: **operationally validated** | First scheduled run 2026-03-01, 5.3MB in cloud | 2026-03-01 |
-
-*Updated: 2026-03-08 | Source: F-018 Control Plane Import Integration completion*
-
 
 ## Deferred Items & Open Questions
 
@@ -969,54 +815,6 @@ def preflight_check(data_path: str, output_dir: str) -> None:
 *Source: F-022 LoRA Training Pipeline (Phase 3)*
 
 
-## Dual-Access Container Networking
-
-Containerized services with port publishing are reachable via two paths simultaneously: container DNS (from sibling containers) and localhost (from host processes).
-
-**Tags:** `hearthminds-core`
-
-### The Pattern
-
-When a container is created with both `--network` and `--publish`:
-
-```bash
-podman run -d --name vllm \
-  --network hearthminds-internal \
-  --publish 8000:8000 \
-  vllm/vllm-openai:latest ...
-```
-
-Two access paths exist:
-1. **Container DNS** (`http://vllm:8000/v1`) — for sibling containers on the same Podman network
-2. **Localhost** (`http://localhost:8000/v1`) — for host processes not on the container network
-
-### When to Use Which
-
-| Caller | URL | Why |
-|--------|-----|-----|
-| Hindsight containers (same network) | `http://vllm:8000/v1` | Container DNS, no host gateway needed |
-| OpenWebUI (host network) | `http://localhost:8000/v1` | Port publish, host process |
-| Moltbot (host process) | `http://localhost:8000/v1` | Same as OpenWebUI |
-| hearthminds_ctl dashboard | `http://localhost:8000` | Health probes from host |
-
-### Code Pattern
-
-Branch the URL based on whether the caller is containerized on the same network:
-
-```python
-if vllm_is_containerized:
-    vllm_url = f"http://vllm:{port}/v1"       # Podman DNS
-else:
-    vllm_url = f"http://localhost:{port}/v1"   # Native process
-```
-
-### Why Not Always Use localhost?
-
-Containers on an `--internal` network (no internet egress) may not have a route to the host's `localhost`. Container DNS is the correct and reliable path for inter-container communication.
-
-*Source: F-017 vLLM Containerization (Cutover Bug #3, Phase 3 topology)*
-
-
 ## Multi-Venv Pipeline Orchestration
 
 When a pipeline spans multiple Python virtual environments with incompatible dependencies, use a shell orchestrator with explicit venv binaries and file-based data handoff.
@@ -1224,6 +1022,137 @@ and all subsequent SQL in the test fails with `InFailedSqlTransaction`.
 *Source: F-022 LoRA Training Pipeline (Phase 1 Lessons Learned)*
 
 
+### Patterns-Practices
+
+## Discovery-Level vs Execution-Level Security
+
+When designing security controls for AI agents, prefer restricting what the LLM can **discover** over restricting what it can **execute**.
+
+**Tags:** `hearthminds-core`
+
+### The Problem
+
+Execution-level security operates at the invocation boundary: the LLM sees all tools, and the system tries to block dangerous invocations via pattern matching or approval gates.
+
+```
+# ✗ Execution-level: LLM sees everything, system blocks at call time
+LLM sees: [shell, file_write, http, memory_search, ...]
+LLM calls: shell("rm -rf /")
+System: ❌ blocked by exec-approvals pattern match
+
+# Bypass: LLM crafts allowed-looking command
+LLM calls: shell("find / -delete")  # Not in denylist → passes
+```
+
+This approach is fundamentally **adversarial** — the LLM and the security layer are in a cat-and-mouse game. Every new tool, every creative prompt injection, every alias is a potential bypass.
+
+### The Pattern
+
+Discovery-level security removes tools from the LLM's awareness entirely. Untrusted contexts can't call what they can't see.
+
+```
+# ✓ Discovery-level: LLM only sees what trust allows
+Trusted skill:    sees [shell, file_write, http, memory_search]
+Untrusted skill:  sees [memory_search, echo]
+# shell, file_write, http don't exist in untrusted context
+# No bypass possible — the tools aren't in the schema
+```
+
+### Why This Matters
+
+| Aspect | Execution-Level | Discovery-Level |
+|--------|----------------|-----------------|
+| Bypass surface | Unlimited (creative invocations) | Zero (tools absent from schema) |
+| Maintenance | Every new tool needs deny rules | New tools inherit trust model |
+| Prompt injection | Can trick LLM into "safe-looking" calls | Can't invoke invisible tools |
+| Audit | Must log and review all blocked attempts | Nothing to block |
+
+### Implementation Example
+
+Iron Claw's skill attenuation model:
+- **Trusted skills** (user-placed): All agent tools available
+- **Installed skills** (from registry): Read-only tools only (no shell, file write, HTTP)
+- **Tool list is filtered before LLM sees it** — the schema sent to the LLM omits restricted tools entirely
+
+### When to Apply
+
+- Any system where untrusted or semi-trusted code/prompts can influence tool selection
+- Agent architectures with plugin/skill/extension systems
+- Multi-tenant environments where different users have different tool access
+
+### When Execution-Level Is Sufficient
+
+- Fully trusted single-user systems (no untrusted plugins)
+- Tools with no dangerous capabilities (pure read-only)
+- Defense-in-depth as a secondary layer behind discovery-level controls
+
+*Source: F-023 Conversation Capture Pipeline (Phase 4 Security Assessment)*
+
+
+## Security Transition Methodology
+
+When migrating from one isolation model to another, map each directive from the old model to its equivalent in the new model. This produces a concrete comparison rather than a subjective assertion.
+
+**Tags:** `hearthminds-core`
+
+### The Problem
+
+Security model transitions (systemd → container, pattern matching → attenuation, monolith → microservice) often rely on vague claims: "containers are more secure" or "the new system is better." Without a systematic comparison, gaps go unnoticed and stakeholders can't verify the claim.
+
+### The Pattern
+
+**Directive-by-directive comparison table:**
+
+For each security control in the old model, document:
+1. What the old directive does
+2. What provides equivalent protection in the new model
+3. Whether the new model is stronger, equivalent, or weaker
+4. Any gaps that need new mitigations
+
+```markdown
+| Old Directive | Purpose | New Equivalent | Assessment |
+|---------------|---------|----------------|------------|
+| ProtectSystem=strict | Read-only root filesystem | Container rootfs (ephemeral) | Stronger |
+| PrivateTmp=yes | Isolated /tmp | Container namespace | Equivalent |
+| NoNewPrivileges=yes | Prevent privilege escalation | Container seccomp + no-new-privileges | Equivalent |
+| MemoryDenyWriteExecute | Prevent JIT abuse | (no equivalent) | Gap → add seccomp rule |
+```
+
+### Complementary Checks
+
+**Cross-reference defaults with deployment config:**
+
+Application defaults (what the service *can* do) often differ from deployment configuration (what it *actually does*). Always verify both:
+
+```python
+# Application default: sandbox enabled
+SANDBOX_ENABLED = True    # settings.rs
+
+# Deployment config: Docker unavailable inside Podman
+# → Sandbox starts but can't create containers
+# → Silent degradation (violates fail-hard)
+```
+
+This caught a dormant sandbox in Iron Claw's Podman deployment — enabled by default but non-functional because Docker wasn't available inside the container.
+
+**Living network security reference:**
+
+Maintain a document listing every listener, its bind address, auth mechanism, and known findings. This makes security assessments dramatically faster — the assessor can verify claims against source code rather than reverse-engineering every listener from scratch.
+
+### When to Apply
+
+- Migrating between isolation technologies (VM → container, systemd → Kubernetes)
+- Replacing a security subsystem (WAF → API gateway, exec-approvals → attenuation)
+- Audit/compliance reviews where "equivalent or better" claims need evidence
+- Any architectural transition where security posture must be preserved or improved
+
+### Anti-pattern: Deployment-Context-Blind Severity
+
+Security severity ratings must be deployment-context-aware. A credential exposure via `podman inspect` is critical in multi-user production but low severity on a single-operator home server with user separation. Generic severity matrices (CVSS) can mislead when the threat model is well-defined and constrained.
+
+*Source: F-023 Conversation Capture Pipeline (Phase 4 Security Assessment)*
+
+
 ---
 
-*Generated: 2026-03-08 11:58:50 UTC | Modules: 21 (tagged: 3, universal: 18) | Repo: hindsight*
+*Generated: 2026-03-08 21:14:13 UTC | Modules: 20 (tagged: 3, universal: 17) | Repo: hindsight*
